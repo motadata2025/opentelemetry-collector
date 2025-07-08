@@ -6,13 +6,18 @@ package otlphttpexporter // import "go.opentelemetry.io/collector/exporter/otlph
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/golang/snappy"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -46,6 +51,23 @@ type baseExporter struct {
 	settings    component.TelemetrySettings
 	// Default user-agent header.
 	userAgent string
+
+	traceConfig        traceAgentConfig
+	cancelConfigReader context.CancelFunc
+}
+type agentConfig struct {
+	Agent struct {
+		TraceAgentStatus   string `json:"trace.agent.status"`
+		AgentServiceStatus string `json:"agent.service.status"`
+	} `json:"agent"`
+	TraceAgent map[string]struct {
+		ServiceTraceState string `json:"service.trace.state"`
+	} `json:"trace.agent"`
+}
+
+type traceAgentConfig struct {
+	mu               sync.RWMutex
+	serviceStatusMap map[string]bool
 }
 
 const (
@@ -87,28 +109,91 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) error {
 		return err
 	}
 	e.client = client
+
+	// Start periodic config reader
+	configCtx, cancel := context.WithCancel(context.Background())
+	e.cancelConfigReader = cancel
+	go e.periodicConfigReader(configCtx, 30*time.Second)
 	return nil
 }
 
-func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
-	tr := ptraceotlp.NewExportRequestFromTraces(td)
+func (e *baseExporter) periodicConfigReader(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	var err error
-	var request []byte
-	switch e.config.Encoding {
-	case EncodingJSON:
-		request, err = tr.MarshalJSON()
-	case EncodingProto:
-		request, err = tr.MarshalProto()
-	default:
-		err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+	// Initial read
+	e.readAgentConfig()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.readAgentConfig()
+		}
 	}
+}
 
+func (e *baseExporter) readAgentConfig() {
+	currentDir, err := os.Getwd()
 	if err != nil {
-		return consumererror.NewPermanent(err)
+		e.settings.Logger.Error("Failed to get current directory", zap.Error(err))
+		return
 	}
 
-	return e.export(ctx, e.tracesURL, request, e.tracesPartialSuccessHandler)
+	configPath := filepath.Join(currentDir, "config", "agent.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		e.settings.Logger.Error("Failed to read agent.json", zap.Error(err))
+		return
+	}
+
+	var config agentConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		e.settings.Logger.Error("Failed to parse agent.json", zap.Error(err))
+		return
+	}
+
+	serviceMap := make(map[string]bool)
+	traceAgentActive := config.Agent.TraceAgentStatus == "yes"
+	agentRunning := config.Agent.AgentServiceStatus == "Running"
+
+	for serviceName, serviceCfg := range config.TraceAgent {
+		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceAgentActive && agentRunning
+	}
+
+	e.traceConfig.mu.Lock()
+	e.traceConfig.serviceStatusMap = serviceMap
+	e.traceConfig.mu.Unlock()
+}
+
+func getFirstServiceName(td ptrace.Traces) string {
+	resourceSpans := td.ResourceSpans()
+	for i := 0; i < resourceSpans.Len(); i++ {
+		if val, ok := resourceSpans.At(i).Resource().Attributes().Get("service.name"); ok {
+			return val.Str()
+		}
+	}
+	return ""
+}
+
+func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
+	serviceName := getFirstServiceName(td)
+	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
+		req := ptraceotlp.NewExportRequestFromTraces(td)
+		marshalProto, err := req.MarshalProto()
+		if err != nil {
+			e.settings.Logger.Error("failed to marshal trace data: ", zap.Error(err))
+		}
+		path := filepath.Join(".", "cache", fmt.Sprintf("trace-%s-%d.cache", getFirstServiceName(td), time.Now().UnixMilli()))
+		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
+		if err != nil {
+			e.settings.Logger.Error("failed to write to file: %w", zap.Error(err))
+		}
+	} else {
+		e.settings.Logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
+	}
+	return nil
 }
 
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
