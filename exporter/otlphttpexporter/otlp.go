@@ -164,6 +164,7 @@ func (e *baseExporter) readAgentConfig() {
 
 	e.traceConfig.mu.Lock()
 	e.traceConfig.serviceStatusMap = serviceMap
+	e.logger.Info("Trace On/Off debug ", zap.Any("config", e.traceConfig.serviceStatusMap))
 	e.traceConfig.mu.Unlock()
 }
 
