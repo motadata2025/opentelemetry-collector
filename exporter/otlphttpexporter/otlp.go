@@ -180,8 +180,6 @@ func getFirstServiceName(td ptrace.Traces) string {
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	serviceName := getFirstServiceName(td)
-	e.logger.Info("Harsh Debug at pushTraces", zap.String("serviceName", serviceName))
-	e.logger.Info("Harsh Debug at pushTraces", zap.Any("serviceName", e.traceConfig.serviceStatusMap[serviceName]))
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		req := ptraceotlp.NewExportRequestFromTraces(td)
 		marshalProto, err := req.MarshalProto()
