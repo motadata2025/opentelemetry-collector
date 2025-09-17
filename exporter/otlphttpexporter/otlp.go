@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/golang/snappy"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,6 +18,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/golang/snappy"
 
 	"go.uber.org/zap"
 	"google.golang.org/genproto/googleapis/rpc/status"
@@ -197,24 +198,40 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	return nil
 }
 
+func getFirstServiceNameFromMetrics(md pmetric.Metrics) string {
+	resourceMetrics := md.ResourceMetrics()
+	for i := 0; i < resourceMetrics.Len(); i++ {
+		if val, ok := resourceMetrics.At(i).Resource().Attributes().Get("service.name"); ok {
+			return val.Str()
+		}
+	}
+	return ""
+}
+
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
-	tr := pmetricotlp.NewExportRequestFromMetrics(md)
+	serviceName := getFirstServiceNameFromMetrics(md)
+	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
+		tr := pmetricotlp.NewExportRequestFromMetrics(md)
 
-	var err error
-	var request []byte
-	switch e.config.Encoding {
-	case EncodingJSON:
-		request, err = tr.MarshalJSON()
-	case EncodingProto:
-		request, err = tr.MarshalProto()
-	default:
-		err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
-	}
+		var err error
+		var marshalProto []byte
+		marshalProto, err = tr.MarshalProto()
 
-	if err != nil {
-		return consumererror.NewPermanent(err)
+		if err != nil {
+			e.settings.Logger.Error("failed to marshal metrics data: ", zap.Error(err))
+			return nil
+		}
+
+		path := filepath.Join(".", "cache", fmt.Sprintf("tracemetric-%s-%d.cache", serviceName, time.Now().UnixMilli()))
+		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
+
+		if err != nil {
+			e.settings.Logger.Error("failed to write metrics file : %w", zap.Error(err))
+		}
+	} else {
+		e.settings.Logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	}
-	return e.export(ctx, e.metricsURL, request, e.metricsPartialSuccessHandler)
+	return nil
 }
 
 func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
