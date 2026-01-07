@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
@@ -44,7 +45,7 @@ func createDefaultConfig() component.Config {
 
 	return &Config{
 		RetryConfig:  configretry.NewDefaultBackOffConfig(),
-		QueueConfig:  exporterhelper.NewDefaultQueueConfig(),
+		QueueConfig:  configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 		Encoding:     EncodingProto,
 		ClientConfig: clientConfig,
 	}
@@ -55,7 +56,7 @@ func createDefaultConfig() component.Config {
 // signalOverrideURL is the URL specified in the signal specific configuration (empty if not specified).
 // signalName is the name of the signal, e.g. "traces", "metrics", "logs".
 // signalVersion is the version of the signal, e.g. "v1" or "v1development".
-func composeSignalURL(oCfg *Config, signalOverrideURL string, signalName string, signalVersion string) (string, error) {
+func composeSignalURL(oCfg *Config, signalOverrideURL, signalName, signalVersion string) (string, error) {
 	switch {
 	case signalOverrideURL != "":
 		_, err := url.Parse(signalOverrideURL)
@@ -161,12 +162,12 @@ func createProfiles(
 	}
 	oCfg := cfg.(*Config)
 
-	oce.profilesURL, err = composeSignalURL(oCfg, "", "profiles", "v1development")
+	oce.profilesURL, err = composeSignalURL(oCfg, oCfg.ProfilesEndpoint, "profiles", "v1development")
 	if err != nil {
 		return nil, err
 	}
 
-	return xexporterhelper.NewProfilesExporter(ctx, set, cfg,
+	return xexporterhelper.NewProfiles(ctx, set, cfg,
 		oce.pushProfiles,
 		exporterhelper.WithStart(oce.start),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
