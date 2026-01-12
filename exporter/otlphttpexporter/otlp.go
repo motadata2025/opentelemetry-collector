@@ -57,9 +57,7 @@ type baseExporter struct {
 	cancelConfigReader context.CancelFunc
 }
 type agentConfig struct {
-	Agent struct {
-		TraceStatus string `json:"trace.status"`
-	}
+	TraceStatus        string `json:"trace.status"`
 	ServiceTraceStatus map[string]struct {
 		ServiceTraceState string `json:"service.trace.state"`
 	} `json:"services"`
@@ -155,7 +153,7 @@ func (e *baseExporter) readAgentConfig() {
 	}
 
 	serviceMap := make(map[string]bool)
-	traceStatusActive := config.Agent.TraceStatus == "yes"
+	traceStatusActive := config.TraceStatus == "yes"
 
 	for serviceName, serviceCfg := range config.ServiceTraceStatus {
 		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceStatusActive
