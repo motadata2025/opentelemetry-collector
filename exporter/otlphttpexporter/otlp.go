@@ -58,12 +58,11 @@ type baseExporter struct {
 }
 type agentConfig struct {
 	Agent struct {
-		TraceAgentStatus   string `json:"trace.agent.status"`
-		AgentServiceStatus string `json:"agent.service.status"`
-	} `json:"agent"`
-	TraceAgent map[string]struct {
+		TraceStatus string `json:"trace.status"`
+	}
+	ServiceTraceStatus map[string]struct {
 		ServiceTraceState string `json:"service.trace.state"`
-	} `json:"trace.agent"`
+	} `json:"services"`
 }
 
 type traceAgentConfig struct {
@@ -142,7 +141,7 @@ func (e *baseExporter) readAgentConfig() {
 		return
 	}
 
-	configPath := filepath.Join(currentDir, "config", "agent.json")
+	configPath := filepath.Join(currentDir, "config", "trace-services.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		e.settings.Logger.Error("Failed to read agent.json", zap.Error(err))
@@ -156,11 +155,10 @@ func (e *baseExporter) readAgentConfig() {
 	}
 
 	serviceMap := make(map[string]bool)
-	traceAgentActive := config.Agent.TraceAgentStatus == "yes"
-	agentRunning := config.Agent.AgentServiceStatus == "Running"
+	traceStatusActive := config.Agent.TraceStatus == "yes"
 
-	for serviceName, serviceCfg := range config.TraceAgent {
-		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceAgentActive && agentRunning
+	for serviceName, serviceCfg := range config.ServiceTraceStatus {
+		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceStatusActive
 	}
 
 	e.traceConfig.mu.Lock()
