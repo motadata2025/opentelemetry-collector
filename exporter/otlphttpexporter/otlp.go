@@ -76,6 +76,21 @@ const (
 	protobufContentType = "application/x-protobuf"
 )
 
+// createFileLogger creates a zap logger that writes to a file
+func createFileLogger(logFilePath string) (*zap.Logger, error) {
+	// Ensure the directory exists
+	logDir := filepath.Dir(logFilePath)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	cfg := zap.NewProductionConfig()
+	cfg.OutputPaths = []string{logFilePath}
+	cfg.ErrorOutputPaths = []string{logFilePath}
+
+	return cfg.Build()
+}
+
 // Create new exporter.
 func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, error) {
 	oCfg := cfg.(*Config)
@@ -90,10 +105,17 @@ func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, er
 	userAgent := fmt.Sprintf("%s/%s (%s/%s)",
 		set.BuildInfo.Description, set.BuildInfo.Version, runtime.GOOS, runtime.GOARCH)
 
+	// Create file logger instead of using console logger
+	fileLogger, err := createFileLogger("/motadata/motadata/collector-log/otlp-exporter.log")
+	if err != nil {
+		// Fall back to the default logger if file logger creation fails
+		fileLogger = set.Logger
+	}
+
 	// client construction is deferred to start
 	return &baseExporter{
 		config:    oCfg,
-		logger:    set.Logger,
+		logger:    fileLogger,
 		userAgent: userAgent,
 		settings:  set.TelemetrySettings,
 	}, nil
@@ -135,20 +157,20 @@ func (e *baseExporter) periodicConfigReader(ctx context.Context, interval time.D
 func (e *baseExporter) readAgentConfig() {
 	currentDir, err := os.Getwd()
 	if err != nil {
-		e.settings.Logger.Error("Failed to get current directory", zap.Error(err))
+		e.logger.Error("Failed to get current directory", zap.Error(err))
 		return
 	}
 
 	configPath := filepath.Join(currentDir, "config", "trace-services.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		e.settings.Logger.Error("Failed to read agent.json", zap.Error(err))
+		e.logger.Error("Failed to read agent.json", zap.Error(err))
 		return
 	}
 
 	var config agentConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		e.settings.Logger.Error("Failed to parse agent.json", zap.Error(err))
+		e.logger.Error("Failed to parse agent.json", zap.Error(err))
 		return
 	}
 
@@ -181,15 +203,15 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		req := ptraceotlp.NewExportRequestFromTraces(td)
 		marshalProto, err := req.MarshalProto()
 		if err != nil {
-			e.settings.Logger.Error("failed to marshal trace data: ", zap.Error(err))
+			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
 		path := filepath.Join(".", "cache", fmt.Sprintf("trace-%s-%d.cache", getFirstServiceName(td), time.Now().UnixMilli()))
 		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
 		if err != nil {
-			e.settings.Logger.Error("failed to write to file: %w", zap.Error(err))
+			e.logger.Error("failed to write to file: %w", zap.Error(err))
 		}
 	} else {
-		e.settings.Logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
+		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
 	}
 	return nil
 }
@@ -214,18 +236,18 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 		marshalProto, err = tr.MarshalProto()
 
 		if err != nil {
-			e.settings.Logger.Error("failed to marshal metrics data: ", zap.Error(err))
+			e.logger.Error("failed to marshal metrics data: ", zap.Error(err))
 			return nil
 		}
 
-		path := filepath.Join(".", "cache", fmt.Sprintf("tracemetric-%s-%d.cache", serviceName, time.Now().UnixMilli()))
+		path := filepath.Join(".", "cache0", fmt.Sprintf("tracemetric-%s-%d.cache0", serviceName, time.Now().UnixMilli()))
 		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
 
 		if err != nil {
-			e.settings.Logger.Error("failed to write metrics file : %w", zap.Error(err))
+			e.logger.Error("failed to write metrics file : %w", zap.Error(err))
 		}
 	} else {
-		e.settings.Logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
+		e.logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	}
 	return nil
 }
