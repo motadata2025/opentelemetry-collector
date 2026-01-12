@@ -78,12 +78,6 @@ const (
 
 // createFileLogger creates a zap logger that writes to a file
 func createFileLogger(logFilePath string) (*zap.Logger, error) {
-	// Ensure the directory exists
-	logDir := filepath.Dir(logFilePath)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create log directory: %w", err)
-	}
-
 	cfg := zap.NewProductionConfig()
 	cfg.OutputPaths = []string{logFilePath}
 	cfg.ErrorOutputPaths = []string{logFilePath}
@@ -161,7 +155,12 @@ func (e *baseExporter) readAgentConfig() {
 		return
 	}
 
+	e.logger.Info("Current Dir is :", zap.String("currentDir", currentDir))
+
 	configPath := filepath.Join(currentDir, "config", "trace-services.json")
+
+	e.logger.Info("Config Path is : ", zap.String("configPath", configPath))
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		e.logger.Error("Failed to read agent.json", zap.Error(err))
