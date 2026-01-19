@@ -19,8 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/snappy"
-
 	"go.uber.org/zap"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
@@ -57,10 +55,13 @@ type baseExporter struct {
 	cancelConfigReader context.CancelFunc
 }
 type agentConfig struct {
-	TraceStatus        string `json:"trace.status"`
-	ServiceTraceStatus map[string]struct {
+	Agent struct {
+		TraceAgentStatus   string `json:"trace.agent.status"`
+		AgentServiceStatus string `json:"agent.service.status"`
+	} `json:"agent"`
+	TraceAgent map[string]struct {
 		ServiceTraceState string `json:"service.trace.state"`
-	} `json:"services"`
+	} `json:"trace.agent"`
 }
 
 type traceAgentConfig struct {
@@ -156,28 +157,25 @@ func (e *baseExporter) readAgentConfig() {
 	}
 
 	e.logger.Info("Current Dir is :", zap.String("currentDir", currentDir))
-
-	configPath := filepath.Join(currentDir, "config", "trace-services.json")
-
-	e.logger.Info("Config Path is : ", zap.String("configPath", configPath))
-
+	configPath := filepath.Join(currentDir, "config", "agent.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		e.logger.Error("Failed to read agent.json", zap.Error(err))
+		e.logger.Error("Failed to read config file", zap.Error(err))
 		return
 	}
 
 	var config agentConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		e.logger.Error("Failed to parse agent.json", zap.Error(err))
+		e.logger.Error("Failed to parse config file", zap.Error(err))
 		return
 	}
 
 	serviceMap := make(map[string]bool)
-	traceStatusActive := config.TraceStatus == "yes"
+	traceAgentActive := config.Agent.TraceAgentStatus == "yes"
+	agentRunning := config.Agent.AgentServiceStatus == "Running"
 
-	for serviceName, serviceCfg := range config.ServiceTraceStatus {
-		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceStatusActive
+	for serviceName, serviceCfg := range config.TraceAgent {
+		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceAgentActive && agentRunning
 	}
 
 	e.traceConfig.mu.Lock()
@@ -198,20 +196,27 @@ func getFirstServiceName(td ptrace.Traces) string {
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	serviceName := getFirstServiceName(td)
+	var request []byte
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
+		var err error
 		req := ptraceotlp.NewExportRequestFromTraces(td)
-		marshalProto, err := req.MarshalProto()
+
+		switch e.config.Encoding {
+		case EncodingJSON:
+			request, err = req.MarshalJSON()
+		case EncodingProto:
+			request, err = req.MarshalProto()
+		default:
+			err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+		}
+
 		if err != nil {
 			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
-		path := filepath.Join(".", "cache", fmt.Sprintf("trace-%s-%d.cache", getFirstServiceName(td), time.Now().UnixMilli()))
-		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
-		if err != nil {
-			e.logger.Error("failed to write to file: %w", zap.Error(err))
-		}
-	} else {
-		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
+		return e.export(ctx, e.tracesURL, request, e.tracesPartialSuccessHandler)
 	}
+
+	e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
 	return nil
 }
 
@@ -227,27 +232,29 @@ func getFirstServiceNameFromMetrics(md pmetric.Metrics) string {
 
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
 	serviceName := getFirstServiceNameFromMetrics(md)
+	var request []byte
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		tr := pmetricotlp.NewExportRequestFromMetrics(md)
-
 		var err error
-		var marshalProto []byte
-		marshalProto, err = tr.MarshalProto()
+
+		switch e.config.Encoding {
+		case EncodingJSON:
+			request, err = tr.MarshalJSON()
+		case EncodingProto:
+			request, err = tr.MarshalProto()
+		default:
+			err = fmt.Errorf("invalid encoding: %s", e.config.Encoding)
+		}
 
 		if err != nil {
 			e.logger.Error("failed to marshal metrics data: ", zap.Error(err))
 			return nil
 		}
 
-		path := filepath.Join(".", "cache0", fmt.Sprintf("tracemetric-%s-%d.cache0", serviceName, time.Now().UnixMilli()))
-		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
-
-		if err != nil {
-			e.logger.Error("failed to write metrics file : %w", zap.Error(err))
-		}
-	} else {
-		e.logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
+		return e.export(ctx, e.metricsURL, request, e.metricsPartialSuccessHandler)
 	}
+
+	e.logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	return nil
 }
 
