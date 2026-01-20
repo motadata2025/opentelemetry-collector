@@ -54,6 +54,21 @@ type baseExporter struct {
 	traceConfig        traceAgentConfig
 	cancelConfigReader context.CancelFunc
 }
+
+type ServiceDetail struct {
+	ID                int64  `json:"id"`
+	TraceServiceName  string `json:"trace.service.name"`
+	TraceServiceType  string `json:"trace.service.type"`
+	ServiceTraceState string `json:"service.trace.state"`
+}
+
+type config interface {
+	getTraceStatus() bool
+	getAgentServiceStatus() bool
+	getServiceState(service string) bool
+	getServices() map[string]ServiceDetail
+}
+
 type agentConfig struct {
 	Agent struct {
 		TraceAgentStatus   string `json:"trace.agent.status"`
@@ -62,6 +77,56 @@ type agentConfig struct {
 	TraceAgent map[string]struct {
 		ServiceTraceState string `json:"service.trace.state"`
 	} `json:"trace.agent"`
+}
+
+type serviceConfig struct {
+	TraceStatus string                   `json:"trace.status"`
+	Services    map[string]ServiceDetail `json:"services"`
+}
+
+func (sConfig *serviceConfig) getTraceStatus() bool {
+	return sConfig.TraceStatus == "yes"
+}
+
+func (sConfig *serviceConfig) getAgentServiceStatus() bool {
+	return true
+}
+
+func (sConfig *serviceConfig) getServiceState(service string) bool {
+	if val, ok := sConfig.Services[service]; ok {
+		return val.ServiceTraceState == "yes"
+	}
+	return false
+}
+
+func (sConfig *serviceConfig) getServices() map[string]ServiceDetail {
+	return sConfig.Services
+}
+
+func (aConfig *agentConfig) getTraceStatus() bool {
+	return aConfig.Agent.TraceAgentStatus == "yes"
+}
+
+func (aConfig *agentConfig) getAgentServiceStatus() bool {
+	return aConfig.Agent.AgentServiceStatus == "Running"
+}
+
+func (aConfig *agentConfig) getServiceState(service string) bool {
+	if val, ok := aConfig.TraceAgent[service]; ok {
+		return val.ServiceTraceState == "yes"
+	}
+	return false
+}
+
+func (aConfig *agentConfig) getServices() map[string]ServiceDetail {
+	services := make(map[string]ServiceDetail)
+	for name, details := range aConfig.TraceAgent {
+		services[name] = ServiceDetail{
+			ServiceTraceState: details.ServiceTraceState,
+			// Other fields are not available in agentConfig, so they will be zero-valued
+		}
+	}
+	return services
 }
 
 type traceAgentConfig struct {
@@ -156,32 +221,61 @@ func (e *baseExporter) readAgentConfig() {
 		return
 	}
 
+	config, configPath, err := getConfigPath()
+	if err != nil {
+		e.logger.Error("Failed to get config path: ", zap.String("config_path", configPath), zap.Error(err))
+		return
+	}
+
 	e.logger.Info("Current Dir is :", zap.String("currentDir", currentDir))
-	configPath := filepath.Join(currentDir, "config", "agent.json")
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		e.logger.Error("Failed to read config file", zap.Error(err))
 		return
 	}
 
-	var config agentConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		e.logger.Error("Failed to parse config file", zap.Error(err))
+	if err := json.Unmarshal(data, config); err != nil {
+		e.logger.Error("Failed to unmarshal config file", zap.Error(err))
 		return
 	}
 
 	serviceMap := make(map[string]bool)
-	traceAgentActive := config.Agent.TraceAgentStatus == "yes"
-	agentRunning := config.Agent.AgentServiceStatus == "Running"
+	traceAgentActive := config.getTraceStatus()
+	agentRunning := config.getAgentServiceStatus()
+	services := config.getServices()
 
-	for serviceName, serviceCfg := range config.TraceAgent {
-		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceAgentActive && agentRunning
+	for serviceName, serviceDetail := range services {
+		serviceMap[serviceName] = serviceDetail.ServiceTraceState == "yes" && traceAgentActive && agentRunning
 	}
 
 	e.traceConfig.mu.Lock()
 	e.traceConfig.serviceStatusMap = serviceMap
 	e.logger.Info("Trace On/Off debug ", zap.Any("config", e.traceConfig.serviceStatusMap))
 	e.traceConfig.mu.Unlock()
+}
+
+func getConfigPath() (config, string, error) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Check for trace-services.json first
+	configPath := filepath.Join(currentDir, "config", "trace-services.json")
+	_, err = os.Stat(configPath)
+	if err == nil {
+		return &serviceConfig{}, configPath, nil
+	}
+
+	// Check for agent.json if trace-services.json is not found
+	configPath = filepath.Join(currentDir, "config", "agent.json")
+	_, err = os.Stat(configPath)
+	if err == nil {
+		return &agentConfig{}, configPath, nil
+	}
+
+	return nil, "", fmt.Errorf("no valid config file found")
 }
 
 func getFirstServiceName(td ptrace.Traces) string {
