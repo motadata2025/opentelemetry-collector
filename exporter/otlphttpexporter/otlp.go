@@ -175,6 +175,15 @@ func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, er
 	if err != nil {
 		// Fall back to the default logger if file logger creation fails
 		fileLogger = set.Logger
+	} else {
+		// create new file and then write error into file
+		f, err := os.Create(currentDir + "/otel-collector.log")
+		if err != nil {
+			return nil, err
+		}
+
+		f.WriteString("Error: " + err.Error() + "\n")
+		f.Close()
 	}
 
 	// client construction is deferred to start
