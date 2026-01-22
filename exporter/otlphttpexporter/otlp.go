@@ -178,11 +178,10 @@ func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, er
 
 		f, err := os.Create(currentDir + "/otel-collector.log")
 		if err != nil {
+			f.WriteString("Error: " + err.Error() + "\n")
+			f.Close()
 			return nil, err
 		}
-
-		f.WriteString("Error: " + err.Error() + "\n")
-		f.Close()
 	} else {
 		// create new file and then write error into file
 		f, err := os.Create(currentDir + "/otel-collector.log")
