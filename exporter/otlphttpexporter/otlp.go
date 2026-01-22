@@ -165,8 +165,13 @@ func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, er
 	userAgent := fmt.Sprintf("%s/%s (%s/%s)",
 		set.BuildInfo.Description, set.BuildInfo.Version, runtime.GOOS, runtime.GOARCH)
 
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
 	// Create file logger instead of using console logger
-	fileLogger, err := createFileLogger("/motadata/motadata/collector-log/otlp-exporter.log")
+	fileLogger, err := createFileLogger(currentDir + "/logs/otlp-exporter.log")
 	if err != nil {
 		// Fall back to the default logger if file logger creation fails
 		fileLogger = set.Logger
