@@ -142,15 +142,6 @@ const (
 	protobufContentType = "application/x-protobuf"
 )
 
-// createFileLogger creates a zap logger that writes to a file
-func createFileLogger(logFilePath string) (*zap.Logger, error) {
-	cfg := zap.NewProductionConfig()
-	cfg.OutputPaths = []string{logFilePath}
-	cfg.ErrorOutputPaths = []string{logFilePath}
-
-	return cfg.Build()
-}
-
 // Create new exporter.
 func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, error) {
 	oCfg := cfg.(*Config)
@@ -164,39 +155,9 @@ func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, er
 
 	userAgent := fmt.Sprintf("%s/%s (%s/%s)",
 		set.BuildInfo.Description, set.BuildInfo.Version, runtime.GOOS, runtime.GOARCH)
-
-	currentDir, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-
-	// Create file logger instead of using console logger
-	fileLogger, err := createFileLogger(currentDir + "/logs/otlp-exporter.log")
-	if err != nil {
-		// Fall back to the default logger if file logger creation fails
-		fileLogger = set.Logger
-
-		f, err := os.Create(currentDir + "/otel-collector.log")
-		if err != nil {
-			f.WriteString("Error: " + err.Error() + "\n")
-			f.Close()
-			return nil, err
-		}
-	} else {
-		// create new file and then write error into file
-		f, err := os.Create(currentDir + "/otel-collector.log")
-		if err != nil {
-
-			f.WriteString("Error: " + err.Error() + "\n")
-			f.Close()
-			return nil, err
-		}
-	}
-
-	// client construction is deferred to start
 	return &baseExporter{
 		config:    oCfg,
-		logger:    fileLogger,
+		logger:    set.Logger,
 		userAgent: userAgent,
 		settings:  set.TelemetrySettings,
 	}, nil

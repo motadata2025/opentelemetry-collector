@@ -4,6 +4,9 @@
 package telemetry // import "go.opentelemetry.io/collector/service/telemetry"
 
 import (
+	"os"
+	"path/filepath"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	"go.uber.org/zap"
@@ -17,6 +20,21 @@ func newLogger(set Settings, cfg Config) (*zap.Logger, log.LoggerProvider, error
 	// Copied from NewProductionConfig.
 	ec := zap.NewProductionEncoderConfig()
 	ec.EncodeTime = zapcore.ISO8601TimeEncoder
+	// Ensure logs directory exists
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, nil, err
+	}
+	logDir := filepath.Join(currentDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, nil, err
+	}
+	logFile := filepath.Join(logDir, "otel-collector.log")
+
+	// Append file path to OutputPaths and ErrorOutputPaths
+	cfg.Logs.OutputPaths = append(cfg.Logs.OutputPaths, logFile)
+	cfg.Logs.ErrorOutputPaths = append(cfg.Logs.ErrorOutputPaths, logFile)
+
 	zapCfg := &zap.Config{
 		Level:             zap.NewAtomicLevelAt(cfg.Logs.Level),
 		Development:       cfg.Logs.Development,
