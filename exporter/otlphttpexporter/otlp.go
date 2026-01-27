@@ -328,6 +328,7 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		if err != nil {
 			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
+		e.logger.Info("Sending trace data for service : ", zap.String("serviceName", serviceName))
 		return e.export(ctx, e.tracesURL, request, e.tracesPartialSuccessHandler)
 	}
 
