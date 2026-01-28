@@ -289,13 +289,16 @@ func appendClusterToServiceName(td ptrace.Traces) {
 }
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
-	appendClusterToServiceName(td)
+	tdCopy := ptrace.NewTraces()
+	td.CopyTo(tdCopy)
 
-	serviceName := getFirstServiceName(td)
+	appendClusterToServiceName(tdCopy)
+
+	serviceName := getFirstServiceName(tdCopy)
 	var request []byte
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		var err error
-		req := ptraceotlp.NewExportRequestFromTraces(td)
+		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
 
 		switch e.config.Encoding {
 		case EncodingJSON:
