@@ -20,8 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/snappy"
-
 	"go.uber.org/zap"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
@@ -190,16 +188,14 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 
 	serviceName := getFirstServiceName(tdCopy)
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
+		var err error
 		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
 		marshalProto, err := req.MarshalProto()
 		if err != nil {
 			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
-		path := filepath.Join(".", "cache", fmt.Sprintf("trace-%s-%d.cache", getFirstServiceName(td), time.Now().UnixMilli()))
-		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
-		if err != nil {
-			e.logger.Error("failed to write to file: %w", zap.Error(err))
-		}
+		e.logger.Info("Sending trace data: ", zap.String("serviceName", serviceName))
+		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
 	} else {
 		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
 	}
@@ -272,12 +268,7 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 			return nil
 		}
 
-		path := filepath.Join(".", "cache", fmt.Sprintf("tracemetric-%s-%d.cache", serviceName, time.Now().UnixMilli()))
-		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
-
-		if err != nil {
-			e.logger.Error("failed to write metrics file : %w", zap.Error(err))
-		}
+		return e.export(ctx, e.metricsURL, marshalProto, e.metricsPartialSuccessHandler)
 	} else {
 		e.logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	}
