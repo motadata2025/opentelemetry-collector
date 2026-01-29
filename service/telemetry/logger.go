@@ -4,8 +4,11 @@
 package telemetry // import "go.opentelemetry.io/collector/service/telemetry"
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
@@ -29,11 +32,9 @@ func newLogger(set Settings, cfg Config) (*zap.Logger, log.LoggerProvider, error
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, nil, err
 	}
-	logFile := filepath.Join(logDir, "otel-collector.log")
 
-	// Append file path to OutputPaths and ErrorOutputPaths
-	cfg.Logs.OutputPaths = append(cfg.Logs.OutputPaths, logFile)
-	cfg.Logs.ErrorOutputPaths = append(cfg.Logs.ErrorOutputPaths, logFile)
+	// Create the rotating file writer
+	writer := NewDateRotatingWriter(logDir, "otel-collector.log")
 
 	zapCfg := &zap.Config{
 		Level:             zap.NewAtomicLevelAt(cfg.Logs.Level),
@@ -56,6 +57,19 @@ func newLogger(set Settings, cfg Config) (*zap.Logger, log.LoggerProvider, error
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Add the rotating file writer to the logger
+	// We use zapcore.AddSync to make the writer safe for concurrent use
+	fileCore := zapcore.NewCore(
+		zapcore.NewJSONEncoder(ec), // Use JSON encoder for file logs, or make this configurable
+		zapcore.AddSync(writer),
+		zap.NewAtomicLevelAt(cfg.Logs.Level),
+	)
+
+	// Wrap the existing core (stdout/stderr) with the file core
+	logger = logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+		return zapcore.NewTee(core, fileCore)
+	}))
 
 	// The attributes in set.Resource.Attributes(), which are generated in service.go, are added
 	// as resource attributes for logs exported through the LoggerProvider instantiated below.
@@ -110,4 +124,73 @@ func newSampledCore(core zapcore.Core, sc *LogsSamplingConfig) zapcore.Core {
 		sc.Initial,
 		sc.Thereafter,
 	)
+}
+
+// DateRotatingWriter implements io.WriteCloser and rotates files based on date.
+type DateRotatingWriter struct {
+	dir          string
+	baseFilename string
+	currentFile  *os.File
+	currentDate  string
+	mu           sync.Mutex
+	nowFunc      func() time.Time
+}
+
+// NewDateRotatingWriter creates a new DateRotatingWriter.
+func NewDateRotatingWriter(dir, baseFilename string) *DateRotatingWriter {
+	return &DateRotatingWriter{
+		dir:          dir,
+		baseFilename: baseFilename,
+		nowFunc:      time.Now,
+	}
+}
+
+func (w *DateRotatingWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Check if rotation is needed
+	now := w.nowFunc()
+	dateStr := now.Format("02-January-2006") // Format: 28-January-2026
+
+	if w.currentFile == nil || w.currentDate != dateStr {
+		if err := w.rotate(now); err != nil {
+			return 0, err
+		}
+	}
+
+	return w.currentFile.Write(p)
+}
+
+func (w *DateRotatingWriter) rotate(t time.Time) error {
+	if w.currentFile != nil {
+		if err := w.currentFile.Close(); err != nil {
+			return err
+		}
+	}
+
+	// Format: "28-January-2026 23-file-name"
+	// Assuming "23" is the hour.
+	filename := fmt.Sprintf("%s %02d-%s", t.Format("02-January-2006"), t.Hour(), w.baseFilename)
+	filePath := filepath.Join(w.dir, filename)
+
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+
+	w.currentFile = file
+	w.currentDate = t.Format("02-January-2006")
+
+	return nil
+}
+
+func (w *DateRotatingWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.currentFile != nil {
+		return w.currentFile.Close()
+	}
+	return nil
 }
