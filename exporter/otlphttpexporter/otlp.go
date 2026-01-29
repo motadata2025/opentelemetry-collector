@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -180,9 +181,16 @@ func getFirstServiceName(td ptrace.Traces) string {
 }
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
-	serviceName := getFirstServiceName(td)
+	tdCopy := ptrace.NewTraces()
+	td.CopyTo(tdCopy)
+
+	appendClusterToServiceName(tdCopy)
+
+	appendClusterToServiceName(tdCopy)
+
+	serviceName := getFirstServiceName(tdCopy)
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
-		req := ptraceotlp.NewExportRequestFromTraces(td)
+		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
 		marshalProto, err := req.MarshalProto()
 		if err != nil {
 			e.settings.Logger.Error("failed to marshal trace data: ", zap.Error(err))
@@ -198,6 +206,46 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	return nil
 }
 
+func appendClusterToServiceName(td ptrace.Traces) {
+	resourceSpans := td.ResourceSpans()
+
+	for i := 0; i < resourceSpans.Len(); i++ {
+		resource := resourceSpans.At(i).Resource()
+		attrs := resource.Attributes()
+
+		serviceVal, serviceOk := attrs.Get("service.name")
+		clusterVal, clusterOk := attrs.Get("k8s.cluster.name")
+
+		if serviceOk && clusterOk {
+			newServiceName := serviceVal.Str() + "@" + clusterVal.Str()
+			attrs.PutStr("service.name", newServiceName)
+		}
+	}
+}
+
+func appendClusterToServiceNameInMetrics(md pmetric.Metrics) {
+	resourceMetrics := md.ResourceMetrics()
+
+	for i := 0; i < resourceMetrics.Len(); i++ {
+		resource := resourceMetrics.At(i).Resource()
+		attrs := resource.Attributes()
+
+		serviceVal, serviceOk := attrs.Get("service.name")
+		clusterVal, clusterOk := attrs.Get("k8s.cluster.name")
+
+		if serviceOk && clusterOk {
+			serviceName := serviceVal.Str()
+			clusterName := clusterVal.Str()
+
+			// Avoid double append
+			if !strings.Contains(serviceName, "@"+clusterName) {
+				newServiceName := serviceName + "@" + clusterName
+				attrs.PutStr("service.name", newServiceName)
+			}
+		}
+	}
+}
+
 func getFirstServiceNameFromMetrics(md pmetric.Metrics) string {
 	resourceMetrics := md.ResourceMetrics()
 	for i := 0; i < resourceMetrics.Len(); i++ {
@@ -209,6 +257,8 @@ func getFirstServiceNameFromMetrics(md pmetric.Metrics) string {
 }
 
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
+	appendClusterToServiceNameInMetrics(md)
+
 	serviceName := getFirstServiceNameFromMetrics(md)
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		tr := pmetricotlp.NewExportRequestFromMetrics(md)
