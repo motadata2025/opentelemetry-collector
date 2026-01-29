@@ -139,20 +139,20 @@ func (e *baseExporter) periodicConfigReader(ctx context.Context, interval time.D
 func (e *baseExporter) readAgentConfig() {
 	currentDir, err := os.Getwd()
 	if err != nil {
-		e.settings.Logger.Error("Failed to get current directory", zap.Error(err))
+		e.logger.Error("Failed to get current directory", zap.Error(err))
 		return
 	}
 
 	configPath := filepath.Join(currentDir, "config", "agent.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		e.settings.Logger.Error("Failed to read agent.json", zap.Error(err))
+		e.logger.Error("Failed to read agent.json", zap.Error(err))
 		return
 	}
 
 	var config agentConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		e.settings.Logger.Error("Failed to parse agent.json", zap.Error(err))
+		e.logger.Error("Failed to parse agent.json", zap.Error(err))
 		return
 	}
 
@@ -193,15 +193,15 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
 		marshalProto, err := req.MarshalProto()
 		if err != nil {
-			e.settings.Logger.Error("failed to marshal trace data: ", zap.Error(err))
+			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
 		path := filepath.Join(".", "cache", fmt.Sprintf("trace-%s-%d.cache", getFirstServiceName(td), time.Now().UnixMilli()))
 		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
 		if err != nil {
-			e.settings.Logger.Error("failed to write to file: %w", zap.Error(err))
+			e.logger.Error("failed to write to file: %w", zap.Error(err))
 		}
 	} else {
-		e.settings.Logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
+		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
 	}
 	return nil
 }
@@ -268,7 +268,7 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 		marshalProto, err = tr.MarshalProto()
 
 		if err != nil {
-			e.settings.Logger.Error("failed to marshal metrics data: ", zap.Error(err))
+			e.logger.Error("failed to marshal metrics data: ", zap.Error(err))
 			return nil
 		}
 
@@ -276,10 +276,10 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 		err = os.WriteFile(path, snappy.Encode(nil, marshalProto), 0644)
 
 		if err != nil {
-			e.settings.Logger.Error("failed to write metrics file : %w", zap.Error(err))
+			e.logger.Error("failed to write metrics file : %w", zap.Error(err))
 		}
 	} else {
-		e.settings.Logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
+		e.logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	}
 	return nil
 }
