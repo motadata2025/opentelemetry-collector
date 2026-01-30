@@ -4,6 +4,7 @@
 package telemetry // import "go.opentelemetry.io/collector/service/telemetry"
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,8 +37,11 @@ func newLogger(set Settings, cfg Config) (*zap.Logger, log.LoggerProvider, error
 	// Create the rotating file writer
 	writer := NewDateRotatingWriter(logDir, "otel-collector.log")
 
+	// Create a shared atomic level that can be updated dynamically
+	atomicLevel := zap.NewAtomicLevelAt(cfg.Logs.Level)
+
 	zapCfg := &zap.Config{
-		Level:             zap.NewAtomicLevelAt(cfg.Logs.Level),
+		Level:             atomicLevel,
 		Development:       cfg.Logs.Development,
 		Encoding:          cfg.Logs.Encoding,
 		EncoderConfig:     ec,
@@ -63,8 +67,11 @@ func newLogger(set Settings, cfg Config) (*zap.Logger, log.LoggerProvider, error
 	fileCore := zapcore.NewCore(
 		zapcore.NewJSONEncoder(ec), // Use JSON encoder for file logs, or make this configurable
 		zapcore.AddSync(writer),
-		zap.NewAtomicLevelAt(cfg.Logs.Level),
+		atomicLevel,
 	)
+
+	// Start watching agent.json for log level changes
+	go watchAgentConfig(atomicLevel)
 
 	// Wrap the existing core (stdout/stderr) with the file core
 	logger = logger.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
@@ -187,6 +194,11 @@ func (w *DateRotatingWriter) rotate(t time.Time) error {
 	filename := fmt.Sprintf("%s %02d-%s", t.Format("02-January-2006"), t.Hour(), w.baseFilename)
 	filePath := filepath.Join(w.dir, filename)
 
+	// Ensure the directory exists
+	if err := os.MkdirAll(w.dir, 0755); err != nil {
+		return err
+	}
+
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
@@ -208,4 +220,72 @@ func (w *DateRotatingWriter) Close() error {
 		return w.currentFile.Close()
 	}
 	return nil
+}
+
+type agentConfigCtx struct {
+	Agent struct {
+		LogLevel     *int `json:"trace.collector.log.level"`
+		LogLevelTypo *int `json:"trace.collector.log.leve"`
+	} `json:"agent"`
+}
+
+func watchAgentConfig(atomicLevel zap.AtomicLevel) {
+	// Locate agent.json: Always use current directory + /config/ + agent.json
+	wd, err := os.Getwd()
+	if err != nil {
+		// Cannot get current working directory, cannot watch
+		return
+	}
+	configPath := filepath.Join(wd, "config", "agent.json")
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var lastLevel zapcore.Level = atomicLevel.Level()
+
+	for range ticker.C {
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			continue
+		}
+
+		var cfg agentConfigCtx
+		if err := json.Unmarshal(content, &cfg); err != nil {
+			continue
+		}
+
+		var levelVal *int
+		if cfg.Agent.LogLevel != nil {
+			levelVal = cfg.Agent.LogLevel
+		} else if cfg.Agent.LogLevelTypo != nil {
+			levelVal = cfg.Agent.LogLevelTypo
+		}
+
+		if levelVal == nil {
+			continue
+		}
+
+		// Map Integer to Zap Level
+		// 0 = Trace -> Map to Debug (Zap doesn't have Trace level publicly exposed easily as standard, usually Debug is lowest)
+		// 1 = Debug
+		// 2 = Info
+		var newLevel zapcore.Level
+		switch *levelVal {
+		case 0, 1:
+			newLevel = zapcore.DebugLevel
+		case 2:
+			newLevel = zapcore.InfoLevel
+		default:
+			// Fallback or keep current? Let's assume Info for unknown positive, or keep current.
+			// Given user map 0-2, maybe >2 is warn/error?
+			// User said: "value 0 = trace, 1 = debug and 2 = info."
+			// Let's map strict for now.
+			newLevel = zapcore.InfoLevel
+		}
+
+		if newLevel != lastLevel {
+			atomicLevel.SetLevel(newLevel)
+			lastLevel = newLevel
+		}
+	}
 }
