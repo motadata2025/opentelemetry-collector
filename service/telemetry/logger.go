@@ -132,6 +132,8 @@ type DateRotatingWriter struct {
 	baseFilename string
 	currentFile  *os.File
 	currentDate  string
+	currentPath  string    // Track the current file path
+	lastCheck    time.Time // Last time we checked if file exists
 	mu           sync.Mutex
 	nowFunc      func() time.Time
 }
@@ -152,6 +154,17 @@ func (w *DateRotatingWriter) Write(p []byte) (n int, err error) {
 	// Check if rotation is needed
 	now := w.nowFunc()
 	dateStr := now.Format("02-January-2006") // Format: 28-January-2026
+
+	// Periodic check if file was deleted (every 1 second)
+	// Only check if we have an open file
+	if w.currentFile != nil && time.Since(w.lastCheck) > time.Second {
+		w.lastCheck = now
+		if _, err := os.Stat(w.currentPath); os.IsNotExist(err) {
+			// File was deleted, force close and reset so it re-opens below
+			_ = w.currentFile.Close() // Best effort close
+			w.currentFile = nil
+		}
+	}
 
 	if w.currentFile == nil || w.currentDate != dateStr {
 		if err := w.rotate(now); err != nil {
@@ -180,7 +193,9 @@ func (w *DateRotatingWriter) rotate(t time.Time) error {
 	}
 
 	w.currentFile = file
+	w.currentPath = filePath
 	w.currentDate = t.Format("02-January-2006")
+	w.lastCheck = time.Now() // Reset check time
 
 	return nil
 }
