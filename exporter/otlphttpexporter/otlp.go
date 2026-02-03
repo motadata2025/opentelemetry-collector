@@ -164,7 +164,7 @@ func (e *baseExporter) readAgentConfig() {
 
 	e.traceConfig.mu.Lock()
 	e.traceConfig.serviceStatusMap = serviceMap
-	e.logger.Info("Trace On/Off debug ", zap.Any("config", e.traceConfig.serviceStatusMap))
+	e.logger.Debug("Trace On/Off debug ", zap.Any("config", e.traceConfig.serviceStatusMap))
 	e.traceConfig.mu.Unlock()
 }
 
@@ -194,7 +194,7 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		if err != nil {
 			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
-		e.logger.Info("Sending trace data: ", zap.String("serviceName", serviceName))
+		e.logger.Debug("Sending trace data: ", zap.String("serviceName", serviceName))
 		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
 	} else {
 		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
