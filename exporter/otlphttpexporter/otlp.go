@@ -184,8 +184,6 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 
 	appendClusterToServiceName(tdCopy)
 
-	appendClusterToServiceName(tdCopy)
-
 	serviceName := getFirstServiceName(tdCopy)
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		var err error
