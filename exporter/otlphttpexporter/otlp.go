@@ -155,7 +155,8 @@ func (e *baseExporter) readAgentConfig() {
 	}
 
 	serviceMap := make(map[string]bool)
-	traceAgentActive := config.Agent.TraceAgentStatus == "yes"
+	//traceAgentActive := config.Agent.TraceAgentStatus == "yes"
+	traceAgentActive := true
 	agentRunning := config.Agent.AgentServiceStatus == "Running"
 
 	for serviceName, serviceCfg := range config.TraceAgent {
