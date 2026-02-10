@@ -12,8 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -54,15 +52,12 @@ type baseExporter struct {
 
 	traceConfig        traceAgentConfig
 	cancelConfigReader context.CancelFunc
+	configClient       *http.Client
 }
-type agentConfig struct {
-	Agent struct {
-		TraceAgentStatus   string `json:"trace.agent.status"`
-		AgentServiceStatus string `json:"agent.service.status"`
-	} `json:"agent"`
-	TraceAgent map[string]struct {
+type TraceServiceResponse struct {
+	Result map[string]struct {
 		ServiceTraceState string `json:"service.trace.state"`
-	} `json:"trace.agent"`
+	} `json:"result"`
 }
 
 type traceAgentConfig struct {
@@ -109,11 +104,22 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) error {
 		return err
 	}
 	e.client = client
+	e.configClient = &http.Client{
+		Timeout: 10 * time.Second,
+	}
 
 	// Start periodic config reader
 	configCtx, cancel := context.WithCancel(context.Background())
 	e.cancelConfigReader = cancel
-	go e.periodicConfigReader(configCtx, 30*time.Second)
+	go e.periodicConfigReader(configCtx, 1*time.Minute)
+
+	return nil
+}
+
+func (e *baseExporter) shutdown(ctx context.Context) error {
+	if e.cancelConfigReader != nil {
+		e.cancelConfigReader()
+	}
 	return nil
 }
 
@@ -122,51 +128,72 @@ func (e *baseExporter) periodicConfigReader(ctx context.Context, interval time.D
 	defer ticker.Stop()
 
 	// Initial read
-	e.readAgentConfig()
+	e.pollTraceServiceConfig()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			e.readAgentConfig()
+			e.pollTraceServiceConfig()
 		}
 	}
 }
 
-func (e *baseExporter) readAgentConfig() {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		e.logger.Error("Failed to get current directory", zap.Error(err))
+func (e *baseExporter) pollTraceServiceConfig() {
+	if e.config.ClientConfig.Endpoint == "" {
 		return
 	}
 
-	configPath := filepath.Join(currentDir, "config", "agent.json")
-	data, err := os.ReadFile(configPath)
+	parsedURL, err := url.Parse(e.config.ClientConfig.Endpoint)
 	if err != nil {
-		e.logger.Error("Failed to read agent.json", zap.Error(err))
+		e.logger.Error("Failed to parse endpoint URL", zap.Error(err))
 		return
 	}
 
-	var config agentConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		e.logger.Error("Failed to parse agent.json", zap.Error(err))
+	// Construct the trace services URL: {scheme}://{host}:{port}/v1/trace-services
+	traceServicesURL := fmt.Sprintf("%s://%s/v1/trace-services", parsedURL.Scheme, parsedURL.Host)
+
+	req, err := http.NewRequest(http.MethodGet, traceServicesURL, nil)
+	if err != nil {
+		e.logger.Error("Failed to create request for trace services", zap.Error(err))
+		return
+	}
+
+	resp, err := e.configClient.Do(req)
+	if err != nil {
+		e.logger.Error("Failed to fetch trace services config", zap.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		e.logger.Error("Failed to fetch trace services config", zap.Int("status_code", resp.StatusCode))
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		e.logger.Error("Failed to read response body", zap.Error(err))
+		return
+	}
+
+	var traceResponse TraceServiceResponse
+	if err := json.Unmarshal(body, &traceResponse); err != nil {
+		e.logger.Error("Failed to unmarshal trace services response", zap.Error(err))
 		return
 	}
 
 	serviceMap := make(map[string]bool)
-	//traceAgentActive := config.Agent.TraceAgentStatus == "yes"
-	traceAgentActive := true
-	agentRunning := config.Agent.AgentServiceStatus == "Running"
-
-	for serviceName, serviceCfg := range config.TraceAgent {
-		serviceMap[serviceName] = serviceCfg.ServiceTraceState == "yes" && traceAgentActive && agentRunning
+	for serviceName, status := range traceResponse.Result {
+		serviceMap[serviceName] = status.ServiceTraceState == "yes"
 	}
 
 	e.traceConfig.mu.Lock()
 	e.traceConfig.serviceStatusMap = serviceMap
-	e.logger.Info("Trace On/Off debug ", zap.Any("config", e.traceConfig.serviceStatusMap))
+	e.logger.Debug("Updated trace services config", zap.Any("config", e.traceConfig.serviceStatusMap))
 	e.traceConfig.mu.Unlock()
+
 }
 
 func getFirstServiceName(td ptrace.Traces) string {
@@ -193,7 +220,7 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		if err != nil {
 			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
 		}
-		e.logger.Info("Sending trace data: ", zap.String("serviceName", serviceName))
+		e.logger.Debug("Sending trace data: ", zap.String("serviceName", serviceName))
 		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
 	} else {
 		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))

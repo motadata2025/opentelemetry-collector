@@ -92,6 +92,7 @@ func createTraces(
 	return exporterhelper.NewTraces(ctx, set, cfg,
 		oce.pushTraces,
 		exporterhelper.WithStart(oce.start),
+		exporterhelper.WithShutdown(oce.shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		// explicitly disable since we rely on http.Client timeout logic.
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),
@@ -118,6 +119,7 @@ func createMetrics(
 	return exporterhelper.NewMetrics(ctx, set, cfg,
 		oce.pushMetrics,
 		exporterhelper.WithStart(oce.start),
+		exporterhelper.WithShutdown(oce.shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		// explicitly disable since we rely on http.Client timeout logic.
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),
@@ -143,6 +145,7 @@ func createLogs(
 	return exporterhelper.NewLogs(ctx, set, cfg,
 		oce.pushLogs,
 		exporterhelper.WithStart(oce.start),
+		exporterhelper.WithShutdown(oce.shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		// explicitly disable since we rely on http.Client timeout logic.
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),
@@ -169,6 +172,7 @@ func createProfiles(
 	return xexporterhelper.NewProfilesExporter(ctx, set, cfg,
 		oce.pushProfiles,
 		exporterhelper.WithStart(oce.start),
+		exporterhelper.WithShutdown(oce.shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		// explicitly disable since we rely on http.Client timeout logic.
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0}),

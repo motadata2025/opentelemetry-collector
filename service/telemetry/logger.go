@@ -224,8 +224,7 @@ func (w *DateRotatingWriter) Close() error {
 
 type agentConfigCtx struct {
 	Agent struct {
-		LogLevel     *int `json:"trace.collector.log.level"`
-		LogLevelTypo *int `json:"trace.collector.log.leve"`
+		LogLevel *int `json:"system.log.level"`
 	} `json:"agent"`
 }
 
@@ -257,8 +256,6 @@ func watchAgentConfig(atomicLevel zap.AtomicLevel) {
 		var levelVal *int
 		if cfg.Agent.LogLevel != nil {
 			levelVal = cfg.Agent.LogLevel
-		} else if cfg.Agent.LogLevelTypo != nil {
-			levelVal = cfg.Agent.LogLevelTypo
 		}
 
 		if levelVal == nil {
