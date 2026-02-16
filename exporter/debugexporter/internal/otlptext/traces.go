@@ -4,6 +4,8 @@
 package otlptext // import "go.opentelemetry.io/collector/exporter/debugexporter/internal/otlptext"
 
 import (
+	"strconv"
+
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
@@ -23,6 +25,7 @@ func (textTracesMarshaler) MarshalTraces(td ptrace.Traces) ([]byte, error) {
 		rs := rss.At(i)
 		buf.logEntry("Resource SchemaURL: %s", rs.SchemaUrl())
 		buf.logAttributes("Resource attributes", rs.Resource().Attributes())
+		buf.logEntityRefs(rs.Resource())
 		ilss := rs.ScopeSpans()
 		for j := 0; j < ilss.Len(); j++ {
 			buf.logEntry("ScopeSpans #%d", j)
@@ -39,7 +42,7 @@ func (textTracesMarshaler) MarshalTraces(td ptrace.Traces) ([]byte, error) {
 				buf.logAttr("ID", span.SpanID())
 				buf.logAttr("Name", span.Name())
 				buf.logAttr("Kind", span.Kind().String())
-				if ts := span.TraceState().AsRaw(); len(ts) != 0 {
+				if ts := span.TraceState().AsRaw(); ts != "" {
 					buf.logAttr("TraceState", ts)
 				}
 				buf.logAttr("Start time", span.StartTimestamp().String())
@@ -47,6 +50,10 @@ func (textTracesMarshaler) MarshalTraces(td ptrace.Traces) ([]byte, error) {
 
 				buf.logAttr("Status code", span.Status().Code().String())
 				buf.logAttr("Status message", span.Status().Message())
+
+				buf.logAttr("DroppedAttributesCount", strconv.FormatUint(uint64(span.DroppedAttributesCount()), 10))
+				buf.logAttr("DroppedEventsCount", strconv.FormatUint(uint64(span.DroppedEventsCount()), 10))
+				buf.logAttr("DroppedLinksCount", strconv.FormatUint(uint64(span.DroppedLinksCount()), 10))
 
 				buf.logAttributes("Attributes", span.Attributes())
 				buf.logEvents("Events", span.Events())
