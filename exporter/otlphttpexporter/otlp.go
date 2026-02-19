@@ -213,6 +213,9 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	appendClusterToServiceName(tdCopy)
 
 	serviceName := getFirstServiceName(tdCopy)
+
+	e.traceConfig.mu.RLock()
+	defer e.traceConfig.mu.RUnlock()
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		var err error
 		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
@@ -282,6 +285,9 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	appendClusterToServiceNameInMetrics(md)
 
 	serviceName := getFirstServiceNameFromMetrics(md)
+
+	e.traceConfig.mu.RLock()
+	defer e.traceConfig.mu.RUnlock()
 	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
 		tr := pmetricotlp.NewExportRequestFromMetrics(md)
 
