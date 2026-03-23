@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -329,6 +330,74 @@ func TestHandleInvalidRequests(t *testing.T) {
 	}
 
 	require.NoError(t, recv.Shutdown(context.Background()))
+}
+
+func TestKubernetesClusterProxy(t *testing.T) {
+	addr := testutil.GetAvailableLocalAddress(t)
+	upstreamBody := []byte(`{"status":"ok"}`)
+	requestBody := []byte(`{"cluster":"demo"}`)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, http.MethodPost, req.Method)
+		assert.Equal(t, kubernetesClusterURLPath, req.URL.Path)
+		assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+
+		body, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+		assert.Equal(t, requestBody, body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, err = w.Write(upstreamBody)
+		require.NoError(t, err)
+	}))
+	defer upstream.Close()
+
+	prevTarget := kubernetesClusterTarget
+	kubernetesClusterTarget = upstream.URL + kubernetesClusterURLPath
+	t.Cleanup(func() {
+		kubernetesClusterTarget = prevTarget
+	})
+
+	recv := newHTTPReceiver(t, componenttest.NewNopTelemetrySettings(), addr, consumertest.NewNop())
+	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+kubernetesClusterURLPath, bytes.NewReader(requestBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	assert.Equal(t, upstreamBody, body)
+}
+
+func TestKubernetesClusterRejectsNonPost(t *testing.T) {
+	addr := testutil.GetAvailableLocalAddress(t)
+	recv := newHTTPReceiver(t, componenttest.NewNopTelemetrySettings(), addr, consumertest.NewNop())
+	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+kubernetesClusterURLPath, http.NoBody)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	assert.Equal(t, "text/plain", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "405 method not allowed, supported: [POST]", string(body))
 }
 
 func TestProtoHttp(t *testing.T) {

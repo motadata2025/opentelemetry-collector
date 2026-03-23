@@ -166,6 +166,8 @@ func (r *otlpReceiver) startHTTPServer(ctx context.Context, host component.Host)
 		})
 	}
 
+	httpMux.HandleFunc(kubernetesClusterURLPath, r.handleKubernetesCluster)
+
 	var err error
 	if r.serverHTTP, err = httpCfg.ServerConfig.ToServer(ctx, host.GetExtensions(), r.settings.TelemetrySettings, httpMux, confighttp.WithErrorHandler(errorHandler)); err != nil {
 		return err
