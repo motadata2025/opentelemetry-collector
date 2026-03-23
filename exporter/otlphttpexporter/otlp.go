@@ -215,8 +215,9 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	serviceName := getFirstServiceName(tdCopy)
 
 	e.traceConfig.mu.RLock()
-	defer e.traceConfig.mu.RUnlock()
-	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
+	serviceEnabled := len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName]
+	e.traceConfig.mu.RUnlock()
+	if serviceEnabled {
 		var err error
 		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
 		marshalProto, err := req.MarshalProto()
@@ -226,7 +227,7 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		e.logger.Debug("Sending trace data: ", zap.String("serviceName", serviceName))
 		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
 	} else {
-		e.logger.Info("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
+		e.logger.Debug("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
 	}
 	return nil
 }
@@ -287,8 +288,9 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	serviceName := getFirstServiceNameFromMetrics(md)
 
 	e.traceConfig.mu.RLock()
-	defer e.traceConfig.mu.RUnlock()
-	if len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName] == true {
+	serviceEnabled := len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName]
+	e.traceConfig.mu.RUnlock()
+	if serviceEnabled {
 		tr := pmetricotlp.NewExportRequestFromMetrics(md)
 
 		var err error
@@ -302,7 +304,7 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 
 		return e.export(ctx, e.metricsURL, marshalProto, e.metricsPartialSuccessHandler)
 	} else {
-		e.logger.Info("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
+		e.logger.Debug("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	}
 	return nil
 }

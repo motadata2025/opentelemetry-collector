@@ -7,8 +7,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-
-	"go.uber.org/zap"
+	"time"
 )
 
 const (
@@ -16,6 +15,7 @@ const (
 )
 
 var kubernetesClusterTarget = "http://localhost:9433/kubernetes/cluster"
+var kubernetesClusterClient = &http.Client{Timeout: 10 * time.Second}
 
 func (r *otlpReceiver) handleKubernetesCluster(resp http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
@@ -29,8 +29,6 @@ func (r *otlpReceiver) handleKubernetesCluster(resp http.ResponseWriter, req *ht
 		return
 	}
 
-	r.settings.Logger.Info("Forwarding kubernetes cluster payload", zap.ByteString("body", body))
-
 	upstreamReq, err := http.NewRequestWithContext(req.Context(), http.MethodPost, kubernetesClusterTarget, bytes.NewReader(body))
 	if err != nil {
 		http.Error(resp, err.Error(), http.StatusInternalServerError)
@@ -39,7 +37,7 @@ func (r *otlpReceiver) handleKubernetesCluster(resp http.ResponseWriter, req *ht
 
 	upstreamReq.Header = req.Header.Clone()
 
-	upstreamResp, err := http.DefaultClient.Do(upstreamReq)
+	upstreamResp, err := kubernetesClusterClient.Do(upstreamReq)
 	if err != nil {
 		http.Error(resp, err.Error(), http.StatusBadGateway)
 		return

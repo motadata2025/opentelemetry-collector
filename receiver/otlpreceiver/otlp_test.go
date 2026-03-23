@@ -400,6 +400,43 @@ func TestKubernetesClusterRejectsNonPost(t *testing.T) {
 	assert.Equal(t, "405 method not allowed, supported: [POST]", string(body))
 }
 
+func TestKubernetesClusterProxyTimeout(t *testing.T) {
+	addr := testutil.GetAvailableLocalAddress(t)
+	requestBody := []byte(`{"cluster":"demo"}`)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		<-req.Context().Done()
+	}))
+	defer upstream.Close()
+
+	prevTarget := kubernetesClusterTarget
+	prevClient := kubernetesClusterClient
+	kubernetesClusterTarget = upstream.URL + kubernetesClusterURLPath
+	kubernetesClusterClient = &http.Client{Timeout: 20 * time.Millisecond}
+	t.Cleanup(func() {
+		kubernetesClusterTarget = prevTarget
+		kubernetesClusterClient = prevClient
+	})
+
+	recv := newHTTPReceiver(t, componenttest.NewNopTelemetrySettings(), addr, consumertest.NewNop())
+	require.NoError(t, recv.Start(context.Background(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, recv.Shutdown(context.Background())) })
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+kubernetesClusterURLPath, bytes.NewReader(requestBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Contains(t, string(body), "Client.Timeout exceeded")
+}
+
 func TestProtoHttp(t *testing.T) {
 	tests := []struct {
 		name               string
