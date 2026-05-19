@@ -235,7 +235,7 @@ func extractMetadata(resource pcommon.Resource, now time.Time) serviceMetadata {
 		ProcessPID:            int64Attr(attrs, "process.pid"),
 		ProcessCommand:        stringAttr(attrs, "process.command"),
 		ProcessCommandLine:    stringAttr(attrs, "process.command_line"),
-		ProcessExecutableName: stringAttr(attrs, "process.executable.name"),
+		ProcessExecutableName: stringAttr(attrs, "process.executable.path"),
 		ProcessRuntimeName:    stringAttr(attrs, "process.runtime.name"),
 		ProcessRuntimeVersion: stringAttr(attrs, "process.runtime.version"),
 		OSType:                stringAttr(attrs, "os.type"),
