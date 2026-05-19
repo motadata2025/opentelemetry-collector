@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,10 +25,11 @@ import (
 const unknownServiceName = "unknown_service"
 
 type metadataExporter struct {
-	cfg    *Config
-	logger *zap.Logger
-	client *http.Client
-	now    func() time.Time
+	cfg      *Config
+	logger   *zap.Logger
+	client   *http.Client
+	now      func() time.Time
+	serverIP string
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -44,27 +47,23 @@ type pendingMetadata struct {
 }
 
 type serviceMetadata struct {
-	ServiceName           string `json:"serviceName"`
-	ServiceVersion        string `json:"serviceVersion"`
-	HostName              string `json:"hostName"`
-	HostID                string `json:"hostId"`
-	ProcessPID            int64  `json:"processPid"`
-	ProcessCommand        string `json:"processCommand"`
-	ProcessCommandLine    string `json:"processCommandLine"`
-	ProcessExecutableName string `json:"processExecutableName"`
-	ProcessRuntimeName    string `json:"processRuntimeName"`
-	ProcessRuntimeVersion string `json:"processRuntimeVersion"`
-	OSType                string `json:"osType"`
-	TelemetrySDKLanguage  string `json:"telemetrySdkLanguage"`
-	TelemetrySDKName      string `json:"telemetrySdkName"`
-	TelemetrySDKVersion   string `json:"telemetrySdkVersion"`
-	DeploymentEnvironment string `json:"deploymentEnvironment"`
-	ContainerID           string `json:"containerId"`
-	K8sNamespaceName      string `json:"k8sNamespaceName"`
-	K8sPodName            string `json:"k8sPodName"`
-	K8sDeploymentName     string `json:"k8sDeploymentName"`
-	IsUnknownService      bool   `json:"isUnknownService"`
-	LastSeenUnixSec       int64  `json:"lastSeenUnixSec"`
+	ServiceName               string `json:"serviceName"`
+	ServiceVersion            string `json:"serviceVersion"`
+	HostName                  string `json:"hostName"`
+	HostIP                    string `json:"hostIp,omitempty"`
+	ProcessPID                int64  `json:"processPid"`
+	ProcessCommandLine        string `json:"processCommandLine"`
+	ProcessExecutablePath     string `json:"processExecutablePath"`
+	ProcessOwner              string `json:"processOwner"`
+	ProcessRuntimeName        string `json:"processRuntimeName"`
+	ProcessRuntimeVersion     string `json:"processRuntimeVersion"`
+	ProcessRuntimeDescription string `json:"processRuntimeDescription"`
+	OSType                    string `json:"osType"`
+	TelemetrySDKLanguage      string `json:"telemetrySdkLanguage"`
+	TelemetrySDKName          string `json:"telemetrySdkName"`
+	TelemetrySDKVersion       string `json:"telemetrySdkVersion"`
+	ContainerID               string `json:"containerId"`
+	Timestamp                 int64  `json:"timestamp"`
 }
 
 func newMetadataExporter(cfg *Config, set exporter.Settings) *metadataExporter {
@@ -74,12 +73,25 @@ func newMetadataExporter(cfg *Config, set exporter.Settings) *metadataExporter {
 	}
 
 	return &metadataExporter{
-		cfg:    cfg,
-		logger: logger,
-		client: &http.Client{},
-		now:    time.Now,
-		cache:  make(map[string]cacheEntry),
+		cfg:      cfg,
+		logger:   logger,
+		client:   &http.Client{},
+		now:      time.Now,
+		serverIP: resolveServerIP(),
+		cache:    make(map[string]cacheEntry),
 	}
+}
+
+// resolveServerIP returns the primary outbound IP by asking the OS routing
+// table via a UDP dial — no data is actually sent, but the kernel picks the
+// correct source interface the same way it would for real outbound traffic.
+func resolveServerIP() string {
+	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
 func (e *metadataExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
@@ -112,12 +124,9 @@ func (e *metadataExporter) collectMetadata(td ptrace.Traces) []pendingMetadata {
 	now := e.now()
 	batch := make(map[string]pendingMetadata)
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	for i := 0; i < resourceSpans.Len(); i++ {
 		rs := resourceSpans.At(i)
-		metadata := extractMetadata(rs.Resource(), now)
+		metadata := e.extractMetadata(rs.Resource(), now)
 		key := dedupeKey(metadata)
 		fingerprint := metadata.fingerprint()
 
@@ -128,7 +137,11 @@ func (e *metadataExporter) collectMetadata(td ptrace.Traces) []pendingMetadata {
 			continue
 		}
 
-		if !e.shouldSendLocked(key, fingerprint, now) {
+		e.mu.Lock()
+		shouldSend := e.shouldSendLocked(key, fingerprint, now)
+		e.mu.Unlock()
+
+		if !shouldSend {
 			continue
 		}
 
@@ -210,45 +223,44 @@ func (e *metadataExporter) sendMetadata(ctx context.Context, payload []serviceMe
 	return nil
 }
 
-func extractMetadata(resource pcommon.Resource, now time.Time) serviceMetadata {
+func (e *metadataExporter) extractMetadata(resource pcommon.Resource, now time.Time) serviceMetadata {
 	attrs := resource.Attributes()
 
 	serviceName := stringAttr(attrs, "service.name")
 	if serviceName == "" {
-		serviceName = stringAttr(attrs, "process.executable.name")
-	}
-	if serviceName == "" {
-		serviceName = stringAttr(attrs, "process.command")
+		lang := stringAttr(attrs, "telemetry.sdk.language")
+		if lang != "" {
+			serviceName = unknownServiceName + ":" + lang
+		} else {
+			serviceName = unknownServiceName
+		}
 	}
 
-	isUnknownService := false
-	if serviceName == "" {
-		serviceName = unknownServiceName
-		isUnknownService = true
+	cmdLine := stringAttr(attrs, "process.command_line")
+	if cmdLine == "" {
+		if args := stringSliceAttr(attrs, "process.command_args"); len(args) > 0 {
+			cmdLine = strings.Join(args, " ")
+		}
 	}
 
 	return serviceMetadata{
-		ServiceName:           serviceName,
-		ServiceVersion:        stringAttr(attrs, "service.version"),
-		HostName:              stringAttr(attrs, "host.name"),
-		HostID:                stringAttr(attrs, "host.id"),
-		ProcessPID:            int64Attr(attrs, "process.pid"),
-		ProcessCommand:        stringAttr(attrs, "process.command"),
-		ProcessCommandLine:    stringAttr(attrs, "process.command_line"),
-		ProcessExecutableName: stringAttr(attrs, "process.executable.path"),
-		ProcessRuntimeName:    stringAttr(attrs, "process.runtime.name"),
-		ProcessRuntimeVersion: stringAttr(attrs, "process.runtime.version"),
-		OSType:                stringAttr(attrs, "os.type"),
-		TelemetrySDKLanguage:  stringAttr(attrs, "telemetry.sdk.language"),
-		TelemetrySDKName:      stringAttr(attrs, "telemetry.sdk.name"),
-		TelemetrySDKVersion:   stringAttr(attrs, "telemetry.sdk.version"),
-		DeploymentEnvironment: stringAttr(attrs, "deployment.environment.name"),
-		ContainerID:           stringAttr(attrs, "container.id"),
-		K8sNamespaceName:      stringAttr(attrs, "k8s.namespace.name"),
-		K8sPodName:            stringAttr(attrs, "k8s.pod.name"),
-		K8sDeploymentName:     stringAttr(attrs, "k8s.deployment.name"),
-		IsUnknownService:      isUnknownService,
-		LastSeenUnixSec:       now.Unix(),
+		ServiceName:               serviceName,
+		ServiceVersion:            stringAttr(attrs, "service.version"),
+		HostName:                  stringAttr(attrs, "host.name"),
+		HostIP:                    e.serverIP,
+		ProcessPID:                int64Attr(attrs, "process.pid"),
+		ProcessCommandLine:        cmdLine,
+		ProcessExecutablePath:     stringAttr(attrs, "process.executable.path"),
+		ProcessOwner:              stringAttr(attrs, "process.owner"),
+		ProcessRuntimeName:        stringAttr(attrs, "process.runtime.name"),
+		ProcessRuntimeVersion:     stringAttr(attrs, "process.runtime.version"),
+		ProcessRuntimeDescription: stringAttr(attrs, "process.runtime.description"),
+		OSType:                    stringAttr(attrs, "os.type"),
+		TelemetrySDKLanguage:      stringAttr(attrs, "telemetry.sdk.language"),
+		TelemetrySDKName:          stringAttr(attrs, "telemetry.sdk.name"),
+		TelemetrySDKVersion:       stringAttr(attrs, "telemetry.sdk.version"),
+		ContainerID:               stringAttr(attrs, "container.id"),
+		Timestamp:                 now.Unix(),
 	}
 }
 
@@ -257,10 +269,10 @@ func dedupeKey(metadata serviceMetadata) string {
 }
 
 func (m serviceMetadata) fingerprint() string {
-	copy := m
-	copy.LastSeenUnixSec = 0
+	snapshot := m
+	snapshot.Timestamp = 0
 
-	data, err := json.Marshal(copy)
+	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return fmt.Sprintf("%s|%d", m.ServiceName, m.ProcessPID)
 	}
@@ -281,4 +293,17 @@ func int64Attr(attrs pcommon.Map, key string) int64 {
 		return 0
 	}
 	return value.Int()
+}
+
+func stringSliceAttr(attrs pcommon.Map, key string) []string {
+	value, ok := attrs.Get(key)
+	if !ok || value.Type() != pcommon.ValueTypeSlice {
+		return nil
+	}
+	s := value.Slice()
+	result := make([]string, 0, s.Len())
+	for i := 0; i < s.Len(); i++ {
+		result = append(result, s.At(i).Str())
+	}
+	return result
 }

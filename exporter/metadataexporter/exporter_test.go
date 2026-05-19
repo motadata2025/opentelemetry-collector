@@ -22,6 +22,20 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
+func testExporter() *metadataExporter {
+	return &metadataExporter{
+		cfg: &Config{
+			Endpoint:     "http://example.com",
+			SendInterval: time.Minute,
+			Timeout:      time.Second,
+		},
+		logger:   zap.NewNop(),
+		now:      time.Now,
+		serverIP: "192.0.2.1",
+		cache:    make(map[string]cacheEntry),
+	}
+}
+
 func TestExtractMetadata(t *testing.T) {
 	now := time.Unix(1710000000, 0)
 	res := pcommon.NewResource()
@@ -29,74 +43,95 @@ func TestExtractMetadata(t *testing.T) {
 	attrs.PutStr("service.name", "payment-service")
 	attrs.PutStr("service.version", "1.0.0")
 	attrs.PutStr("host.name", "server-1")
-	attrs.PutStr("host.id", "host-abc")
 	attrs.PutInt("process.pid", 1234)
-	attrs.PutStr("process.command", "java")
 	attrs.PutStr("process.command_line", "java -jar payment.jar")
 	attrs.PutStr("process.executable.name", "java")
+	attrs.PutStr("process.executable.path", "/usr/bin/java")
+	attrs.PutStr("process.owner", "appuser")
 	attrs.PutStr("process.runtime.name", "OpenJDK Runtime Environment")
 	attrs.PutStr("process.runtime.version", "17.0.10")
+	attrs.PutStr("process.runtime.description", "Java(TM) SE Runtime Environment (build 17.0.10+7)")
 	attrs.PutStr("os.type", "linux")
 	attrs.PutStr("telemetry.sdk.language", "java")
 	attrs.PutStr("telemetry.sdk.name", "opentelemetry")
 	attrs.PutStr("telemetry.sdk.version", "1.35.0")
-	attrs.PutStr("deployment.environment.name", "prod")
 	attrs.PutStr("container.id", "container-123")
-	attrs.PutStr("k8s.namespace.name", "payments")
-	attrs.PutStr("k8s.pod.name", "payment-7d4c")
-	attrs.PutStr("k8s.deployment.name", "payment")
 
-	got := extractMetadata(res, now)
+	got := testExporter().extractMetadata(res, now)
 
 	assert.Equal(t, serviceMetadata{
-		ServiceName:           "payment-service",
-		ServiceVersion:        "1.0.0",
-		HostName:              "server-1",
-		HostID:                "host-abc",
-		ProcessPID:            1234,
-		ProcessCommand:        "java",
-		ProcessCommandLine:    "java -jar payment.jar",
-		ProcessExecutableName: "java",
-		ProcessRuntimeName:    "OpenJDK Runtime Environment",
-		ProcessRuntimeVersion: "17.0.10",
-		OSType:                "linux",
-		TelemetrySDKLanguage:  "java",
-		TelemetrySDKName:      "opentelemetry",
-		TelemetrySDKVersion:   "1.35.0",
-		DeploymentEnvironment: "prod",
-		ContainerID:           "container-123",
-		K8sNamespaceName:      "payments",
-		K8sPodName:            "payment-7d4c",
-		K8sDeploymentName:     "payment",
-		IsUnknownService:      false,
-		LastSeenUnixSec:       1710000000,
+		ServiceName:               "payment-service",
+		ServiceVersion:            "1.0.0",
+		HostName:                  "server-1",
+		HostIP:                    "192.0.2.1",
+		ProcessPID:                1234,
+		ProcessCommandLine:        "java -jar payment.jar",
+		ProcessExecutablePath:     "/usr/bin/java",
+		ProcessOwner:              "appuser",
+		ProcessRuntimeName:        "OpenJDK Runtime Environment",
+		ProcessRuntimeVersion:     "17.0.10",
+		ProcessRuntimeDescription: "Java(TM) SE Runtime Environment (build 17.0.10+7)",
+		OSType:                    "linux",
+		TelemetrySDKLanguage:      "java",
+		TelemetrySDKName:          "opentelemetry",
+		TelemetrySDKVersion:       "1.35.0",
+		ContainerID:               "container-123",
+		Timestamp:                 1710000000,
 	}, got)
+}
+
+func TestProcessCommandLineConsolidation(t *testing.T) {
+	now := time.Unix(1710000000, 0)
+
+	t.Run("prefers command_line over command_args", func(t *testing.T) {
+		res := pcommon.NewResource()
+		res.Attributes().PutStr("process.command_line", "java -jar app.jar")
+		args := res.Attributes().PutEmptySlice("process.command_args")
+		args.AppendEmpty().SetStr("java")
+		args.AppendEmpty().SetStr("-jar")
+		args.AppendEmpty().SetStr("app.jar")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "java -jar app.jar", got.ProcessCommandLine)
+	})
+
+	t.Run("falls back to joined command_args when command_line absent", func(t *testing.T) {
+		res := pcommon.NewResource()
+		args := res.Attributes().PutEmptySlice("process.command_args")
+		args.AppendEmpty().SetStr("java")
+		args.AppendEmpty().SetStr("-jar")
+		args.AppendEmpty().SetStr("app.jar")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "java -jar app.jar", got.ProcessCommandLine)
+	})
+
+	t.Run("empty when neither set", func(t *testing.T) {
+		res := pcommon.NewResource()
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "", got.ProcessCommandLine)
+	})
 }
 
 func TestFallbackServiceNameLogic(t *testing.T) {
 	now := time.Unix(1710000000, 0)
 
-	t.Run("uses process executable name", func(t *testing.T) {
+	t.Run("uses service.name when present", func(t *testing.T) {
 		res := pcommon.NewResource()
-		res.Attributes().PutStr("process.executable.name", "java")
-		got := extractMetadata(res, now)
-		assert.Equal(t, "java", got.ServiceName)
-		assert.False(t, got.IsUnknownService)
+		res.Attributes().PutStr("service.name", "payment-service")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "payment-service", got.ServiceName)
 	})
 
-	t.Run("uses process command", func(t *testing.T) {
+	t.Run("falls back to unknown_service:<lang> when language present", func(t *testing.T) {
 		res := pcommon.NewResource()
-		res.Attributes().PutStr("process.command", "java")
-		got := extractMetadata(res, now)
-		assert.Equal(t, "java", got.ServiceName)
-		assert.False(t, got.IsUnknownService)
+		res.Attributes().PutStr("telemetry.sdk.language", "java")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "unknown_service:java", got.ServiceName)
 	})
 
-	t.Run("uses unknown service fallback", func(t *testing.T) {
+	t.Run("falls back to unknown_service when no name and no language", func(t *testing.T) {
 		res := pcommon.NewResource()
-		got := extractMetadata(res, now)
+		got := testExporter().extractMetadata(res, now)
 		assert.Equal(t, unknownServiceName, got.ServiceName)
-		assert.True(t, got.IsUnknownService)
 	})
 }
 
@@ -174,14 +209,13 @@ func TestHTTPSuccessfulExport(t *testing.T) {
 		attrs.PutStr("service.name", "payment-service")
 		attrs.PutStr("host.name", "server-1")
 		attrs.PutInt("process.pid", 1234)
-		attrs.PutStr("process.command", "java")
 	}))
 	require.NoError(t, err)
 	require.Equal(t, int32(1), requests.Load())
 	require.Equal(t, "Bearer secret", authHeader)
 	require.Len(t, payload, 1)
 	assert.Equal(t, "payment-service", payload[0].ServiceName)
-	assert.Equal(t, int64(1710000000), payload[0].LastSeenUnixSec)
+	assert.Equal(t, int64(1710000000), payload[0].Timestamp)
 }
 
 func TestHTTPNon2xxFailure(t *testing.T) {

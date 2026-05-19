@@ -4,7 +4,7 @@
 
 ## Problem
 
-Discovery backends often need service identity, version, host, process, runtime, container, and Kubernetes metadata, but they do not need full spans. Shipping full traces to a discovery API increases cost, backend load, and privacy risk for no discovery benefit.
+Discovery backends often need service identity, version, host, process, runtime, and container metadata, but they do not need full spans. Shipping full traces to a discovery API increases cost, backend load, and privacy risk for no discovery benefit.
 
 This exporter solves that by:
 
@@ -18,9 +18,9 @@ It never forwards span bodies to the discovery backend.
 ## Architecture
 
 ```text
-Java Applications
-  -> OpenTelemetry Java Agent
-  -> OpenTelemetry Collector
+Applications
+  -> OpenTelemetry SDK / Agent
+  -> OpenTelemetry Collector  (1 per server)
   -> metadataexporter
   -> Backend API /api/services/discovery
 ```
@@ -32,35 +32,44 @@ The exporter extracts these resource attributes when present:
 - `service.name`
 - `service.version`
 - `host.name`
-- `host.id`
 - `process.pid`
-- `process.command`
-- `process.command_line`
-- `process.executable.name`
+- `process.command_line` (falls back to joining `process.command_args` if absent)
+- `process.executable.path`
+- `process.owner`
 - `process.runtime.name`
 - `process.runtime.version`
+- `process.runtime.description`
 - `os.type`
 - `telemetry.sdk.language`
 - `telemetry.sdk.name`
 - `telemetry.sdk.version`
-- `deployment.environment.name`
 - `container.id`
-- `k8s.namespace.name`
-- `k8s.pod.name`
-- `k8s.deployment.name`
+
+In addition, `hostIp` is resolved automatically at Collector startup (see [Host IP Resolution](#host-ip-resolution)).
+
+## Host IP Resolution
+
+Because one Collector runs per server, the exporter resolves the server's own IP once at startup using a UDP dial:
+
+```text
+net.DialTimeout("udp", "8.8.8.8:80", 2s)
+```
+
+No data is actually sent. The OS routing table picks the correct outbound interface, so `hostIp` always reflects the primary server IP regardless of Docker bridges, VPN interfaces, or loopback addresses. The result is stored on the exporter and attached to every metadata payload.
+
+If the dial fails (e.g. no network at startup), `hostIp` is omitted from the payload.
 
 ## Service Identity
 
 Service identity resolution is:
 
 1. `service.name`
-2. `process.executable.name`
-3. `process.command`
-4. `unknown_service`
+2. `unknown_service:<telemetry.sdk.language>` (when `service.name` is absent but SDK language is present)
+3. `unknown_service`
 
-When the final fallback is used, the payload sets `isUnknownService: true`.
+## Deduplication
 
-Deduplication uses:
+Deduplication key:
 
 ```text
 host.name + service.name + process.pid
@@ -69,8 +78,8 @@ host.name + service.name + process.pid
 The exporter re-sends metadata only when:
 
 - a service is new
-- metadata changed
-- the last send time is older than `send_interval`
+- any metadata field changed (fingerprint mismatch)
+- the last send is older than `send_interval`
 
 ## Configuration
 
@@ -82,6 +91,13 @@ exporters:
     send_interval: 60s
     timeout: 5s
 ```
+
+| Field | Default | Description |
+|---|---|---|
+| `endpoint` | _(required)_ | HTTP POST URL for the discovery backend |
+| `api_key` | `""` | Bearer token sent in `Authorization` header |
+| `send_interval` | `60s` | Minimum time between repeated sends for the same service |
+| `timeout` | `5s` | HTTP request timeout |
 
 ## Example Collector Config
 
@@ -120,27 +136,25 @@ service:
     "serviceName": "payment-service",
     "serviceVersion": "1.0.0",
     "hostName": "server-1",
-    "hostId": "host-abc",
+    "hostIp": "192.168.1.10",
     "processPid": 1234,
-    "processCommand": "java",
     "processCommandLine": "java -jar payment.jar",
-    "processExecutableName": "java",
+    "processExecutablePath": "/usr/bin/java",
+    "processOwner": "appuser",
     "processRuntimeName": "OpenJDK Runtime Environment",
     "processRuntimeVersion": "17.0.10",
+    "processRuntimeDescription": "Java(TM) SE Runtime Environment (build 17.0.10+7)",
     "osType": "linux",
     "telemetrySdkLanguage": "java",
     "telemetrySdkName": "opentelemetry",
     "telemetrySdkVersion": "1.35.0",
-    "deploymentEnvironment": "prod",
-    "containerId": "",
-    "k8sNamespaceName": "",
-    "k8sPodName": "",
-    "k8sDeploymentName": "",
-    "isUnknownService": false,
-    "lastSeenUnixSec": 1710000000
+    "containerId": "container-123",
+    "timestamp": 1710000000
   }
 ]
 ```
+
+`hostIp` is omitted if IP resolution failed at startup.
 
 ## Build
 
@@ -183,8 +197,6 @@ replaces:
 
 ## How To Test
 
-Run:
-
 ```bash
 cd exporter/metadataexporter
 go test ./...
@@ -193,7 +205,9 @@ go test ./...
 The unit tests cover:
 
 - metadata extraction from `ResourceSpans`
+- `hostIp` population from resolved server IP
 - service name fallback behavior
+- `process.command_line` fallback to joined `process.command_args`
 - deduplication decisions
 - successful HTTP export
 - non-2xx backend failures
@@ -202,12 +216,13 @@ The unit tests cover:
 ## Limitations
 
 - The deduplication cache is in-memory only and resets on Collector restart.
-- The exporter consumes traces to read resource metadata, but it intentionally discards span data for discovery export.
+- The exporter consumes traces to read resource metadata but intentionally discards span data.
 - The backend contract is fixed to a JSON array over HTTP POST.
 - Retries and persistent queues are not enabled in this minimal implementation.
 
 ## Production Recommendations
 
+- Deploy one Collector per server so `hostIp` correctly identifies the originating machine.
 - Run this exporter in a dedicated traces pipeline for discovery traffic.
 - Use a short backend timeout and a bounded `send_interval`.
 - Put the discovery backend behind a load balancer and TLS terminator.
