@@ -260,7 +260,7 @@ func (e *metadataExporter) extractMetadata(resource pcommon.Resource, now time.T
 		TelemetrySDKName:          stringAttr(attrs, "telemetry.sdk.name"),
 		TelemetrySDKVersion:       stringAttr(attrs, "telemetry.sdk.version"),
 		ContainerID:               stringAttr(attrs, "container.id"),
-		Timestamp:                 now.Unix(),
+		Timestamp:                 now.UnixMilli(),
 	}
 }
 
