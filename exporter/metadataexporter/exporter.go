@@ -22,7 +22,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
-const unknownServiceName = "unknown_service"
+const (
+	unknownServiceName = "unknown_service"
+	metadataAPIPath    = "/api/v1/services-metadata"
+)
 
 type metadataExporter struct {
 	cfg      *Config
@@ -198,7 +201,8 @@ func (e *metadataExporter) sendMetadata(ctx context.Context, payload []serviceMe
 	reqCtx, cancel := context.WithTimeout(ctx, e.cfg.Timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, e.cfg.Endpoint, bytes.NewReader(body))
+	url := strings.TrimRight(e.cfg.Endpoint, "/") + metadataAPIPath
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}

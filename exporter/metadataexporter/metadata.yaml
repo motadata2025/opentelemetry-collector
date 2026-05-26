@@ -7,6 +7,6 @@ status:
 
 tests:
   config:
-    endpoint: http://localhost:9433/api/v1/services-metadata
+    endpoint: "http://localhost:9443"
     send_interval: 60s
     timeout: 5s
