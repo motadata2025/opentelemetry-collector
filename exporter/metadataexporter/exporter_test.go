@@ -286,12 +286,10 @@ func TestCacheUpdatedAfterSuccessfulSend(t *testing.T) {
 
 func TestHTTPSuccessfulExport(t *testing.T) {
 	var requests atomic.Int32
-	var authHeader string
 	var payload []serviceMetadata
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		authHeader = r.Header.Get("Authorization")
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
@@ -301,7 +299,6 @@ func TestHTTPSuccessfulExport(t *testing.T) {
 
 	exp := newMetadataExporter(&Config{
 		Endpoint:     server.URL,
-		APIKey:       "secret",
 		SendInterval: time.Minute,
 		Timeout:      5 * time.Second,
 	}, exporterSettings())
@@ -314,32 +311,9 @@ func TestHTTPSuccessfulExport(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	require.Equal(t, int32(1), requests.Load())
-	require.Equal(t, "Bearer secret", authHeader)
 	require.Len(t, payload, 1)
 	assert.Equal(t, "payment-service", payload[0].ServiceName)
 	assert.Equal(t, int64(1710000000000), payload[0].Timestamp)
-}
-
-func TestNoAPIKeyOmitsAuthHeader(t *testing.T) {
-	var authHeader string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader = r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	exp := newMetadataExporter(&Config{
-		Endpoint:     server.URL,
-		SendInterval: time.Minute,
-		Timeout:      5 * time.Second,
-	}, exporterSettings())
-
-	require.NoError(t, exp.pushTraces(context.Background(), tracesWithResource(func(attrs pcommon.Map) {
-		attrs.PutStr("service.name", "payment-service")
-		attrs.PutStr("host.name", "server-1")
-		attrs.PutInt("process.pid", 1234)
-	})))
-	assert.Empty(t, authHeader)
 }
 
 func TestHTTPNon2xxFailure(t *testing.T) {

@@ -94,6 +94,11 @@ func resolveServerIP() string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
+func (e *metadataExporter) shutdown(_ context.Context) error {
+	e.client.CloseIdleConnections()
+	return nil
+}
+
 func (e *metadataExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	pending := e.collectMetadata(td)
 	if len(pending) == 0 {
@@ -199,9 +204,6 @@ func (e *metadataExporter) sendMetadata(ctx context.Context, payload []serviceMe
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if e.cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+e.cfg.APIKey)
-	}
 
 	resp, err := e.client.Do(req)
 	if err != nil {

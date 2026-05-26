@@ -32,12 +32,15 @@ func createDefaultConfig() component.Config {
 }
 
 func createTraces(ctx context.Context, set exporter.Settings, cfg component.Config) (exporter.Traces, error) {
-	exp := newMetadataExporter(cfg.(*Config), set)
+	c := cfg.(*Config)
+	exp := newMetadataExporter(c, set)
 	return exporterhelper.NewTraces(
 		ctx,
 		set,
 		cfg,
 		exp.pushTraces,
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
+		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: c.Timeout}),
+		exporterhelper.WithShutdown(exp.shutdown),
 	)
 }

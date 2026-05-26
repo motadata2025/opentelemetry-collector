@@ -13,7 +13,6 @@ import (
 // Config defines configuration for the metadata exporter.
 type Config struct {
 	Endpoint     string        `mapstructure:"endpoint"`
-	APIKey       string        `mapstructure:"api_key"`
 	SendInterval time.Duration `mapstructure:"send_interval"`
 	Timeout      time.Duration `mapstructure:"timeout"`
 
