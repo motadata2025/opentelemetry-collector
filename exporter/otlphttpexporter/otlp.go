@@ -111,7 +111,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) error {
 	// Start periodic config reader
 	configCtx, cancel := context.WithCancel(context.Background())
 	e.cancelConfigReader = cancel
-	go e.periodicConfigReader(configCtx, 1*time.Minute)
+	go e.periodicConfigReader(configCtx, 10*time.Second)
 
 	return nil
 }
@@ -187,6 +187,11 @@ func (e *baseExporter) pollTraceServiceConfig() {
 	serviceMap := make(map[string]bool)
 	for serviceName, status := range traceResponse.Result {
 		serviceMap[serviceName] = status.ServiceTraceState == "yes"
+	}
+
+	if len(serviceMap) == 0 {
+		e.logger.Warn("trace-services returned empty result, retaining previous config")
+		return
 	}
 
 	e.traceConfig.mu.Lock()
