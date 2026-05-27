@@ -276,7 +276,13 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 			e.logger.Error("failed to marshal trace data", zap.Error(err))
 		}
 		e.fileLogger.Debug("sending traces to backend", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount), zap.String("url", e.tracesURL))
-		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
+		exportErr := e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
+		if exportErr != nil {
+			e.fileLogger.Debug("export traces failed", zap.String("serviceName", serviceName), zap.String("url", e.tracesURL), zap.Error(exportErr))
+		} else {
+			e.fileLogger.Debug("export traces succeeded", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount))
+		}
+		return exportErr
 	}
 
 	e.fileLogger.Debug("dropping traces: service not enabled in trace-services config",
@@ -368,7 +374,13 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 		}
 
 		e.fileLogger.Debug("sending metrics to backend", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount), zap.String("url", e.metricsURL))
-		return e.export(ctx, e.metricsURL, marshalProto, e.metricsPartialSuccessHandler)
+		exportErr := e.export(ctx, e.metricsURL, marshalProto, e.metricsPartialSuccessHandler)
+		if exportErr != nil {
+			e.fileLogger.Debug("export metrics failed", zap.String("serviceName", serviceName), zap.String("url", e.metricsURL), zap.Error(exportErr))
+		} else {
+			e.fileLogger.Debug("export metrics succeeded", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount))
+		}
+		return exportErr
 	}
 
 	e.fileLogger.Debug("dropping metrics: service not enabled in trace-services config",
