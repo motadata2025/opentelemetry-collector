@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -46,6 +48,7 @@ type baseExporter struct {
 	logsURL     string
 	profilesURL string
 	logger      *zap.Logger
+	fileLogger  *zap.Logger
 	settings    component.TelemetrySettings
 	// Default user-agent header.
 	userAgent string
@@ -71,6 +74,8 @@ const (
 
 	jsonContentType     = "application/json"
 	protobufContentType = "application/x-protobuf"
+
+	debugLogPath = "/motadata/motadata/logs/collector-debug.log"
 )
 
 // Create new exporter.
@@ -89,11 +94,32 @@ func newExporter(cfg component.Config, set exporter.Settings) (*baseExporter, er
 
 	// client construction is deferred to start
 	return &baseExporter{
-		config:    oCfg,
-		logger:    set.Logger,
-		userAgent: userAgent,
-		settings:  set.TelemetrySettings,
+		config:     oCfg,
+		logger:     set.Logger,
+		fileLogger: newFileLogger(debugLogPath),
+		userAgent:  userAgent,
+		settings:   set.TelemetrySettings,
 	}, nil
+}
+
+// newFileLogger creates a zap logger that writes debug+ logs to the given file path.
+// If the file cannot be opened, it falls back to a no-op logger so the exporter still starts.
+func newFileLogger(path string) *zap.Logger {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		// Can't open file — return nop so nothing crashes.
+		return zap.NewNop()
+	}
+
+	encoderCfg := zap.NewProductionEncoderConfig()
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderCfg),
+		zapcore.AddSync(f),
+		zapcore.DebugLevel,
+	)
+	return zap.New(core)
 }
 
 // start actually creates the HTTP client. The client construction is deferred till this point as this
@@ -142,7 +168,7 @@ func (e *baseExporter) periodicConfigReader(ctx context.Context, interval time.D
 
 func (e *baseExporter) pollTraceServiceConfig() {
 	if e.config.ClientConfig.Endpoint == "" {
-		e.logger.Debug("skipping trace-services poll: endpoint not configured")
+		e.fileLogger.Debug("skipping trace-services poll: endpoint not configured")
 		return
 	}
 
@@ -154,7 +180,7 @@ func (e *baseExporter) pollTraceServiceConfig() {
 
 	// Construct the trace services URL: {scheme}://{host}:{port}/v1/trace-services
 	traceServicesURL := fmt.Sprintf("%s://%s/v1/trace-services", parsedURL.Scheme, parsedURL.Host)
-	e.logger.Debug("polling trace-services config", zap.String("url", traceServicesURL))
+	e.fileLogger.Debug("polling trace-services config", zap.String("url", traceServicesURL))
 
 	req, err := http.NewRequest(http.MethodGet, traceServicesURL, nil)
 	if err != nil {
@@ -165,12 +191,14 @@ func (e *baseExporter) pollTraceServiceConfig() {
 	resp, err := e.configClient.Do(req)
 	if err != nil {
 		e.logger.Error("Failed to fetch trace services config — master app may be down, retaining previous config", zap.Error(err))
+		e.fileLogger.Debug("trace-services poll failed", zap.Error(err))
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		e.logger.Error("Failed to fetch trace services config", zap.Int("status_code", resp.StatusCode))
+		e.fileLogger.Debug("trace-services poll non-200", zap.Int("status_code", resp.StatusCode))
 		return
 	}
 
@@ -180,7 +208,7 @@ func (e *baseExporter) pollTraceServiceConfig() {
 		return
 	}
 
-	e.logger.Debug("trace-services raw response", zap.String("body", string(body)))
+	e.fileLogger.Debug("trace-services raw response", zap.String("body", string(body)))
 
 	var traceResponse TraceServiceResponse
 	if err := json.Unmarshal(body, &traceResponse); err != nil {
@@ -193,16 +221,17 @@ func (e *baseExporter) pollTraceServiceConfig() {
 		serviceMap[serviceName] = status.ServiceTraceState == "yes"
 	}
 
-	e.logger.Debug("parsed trace-services config", zap.Any("services", serviceMap))
+	e.fileLogger.Debug("parsed trace-services config", zap.Any("services", serviceMap))
 
 	if len(serviceMap) == 0 {
 		e.logger.Warn("trace-services returned empty result, retaining previous config")
+		e.fileLogger.Debug("trace-services empty result, map not updated")
 		return
 	}
 
 	e.traceConfig.mu.Lock()
 	e.traceConfig.serviceStatusMap = serviceMap
-	e.logger.Debug("updated trace services config", zap.Any("config", e.traceConfig.serviceStatusMap))
+	e.fileLogger.Debug("updated trace services config", zap.Any("config", e.traceConfig.serviceStatusMap))
 	e.traceConfig.mu.Unlock()
 
 }
@@ -224,7 +253,7 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	serviceName := getFirstServiceName(tdCopy)
 	spanCount := td.SpanCount()
 
-	e.logger.Debug("pushTraces called", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount))
+	e.fileLogger.Debug("pushTraces called", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount))
 
 	appendClusterToServiceName(tdCopy)
 
@@ -233,7 +262,7 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	serviceEnabled := !configLoaded || (len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName])
 	e.traceConfig.mu.RUnlock()
 
-	e.logger.Debug("trace filter check",
+	e.fileLogger.Debug("trace filter check",
 		zap.String("serviceName", serviceName),
 		zap.Bool("configLoaded", configLoaded),
 		zap.Bool("serviceEnabled", serviceEnabled),
@@ -246,11 +275,11 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		if err != nil {
 			e.logger.Error("failed to marshal trace data", zap.Error(err))
 		}
-		e.logger.Debug("sending traces to backend", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount), zap.String("url", e.tracesURL))
+		e.fileLogger.Debug("sending traces to backend", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount), zap.String("url", e.tracesURL))
 		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
 	}
 
-	e.logger.Debug("dropping traces: service not enabled in trace-services config",
+	e.fileLogger.Debug("dropping traces: service not enabled in trace-services config",
 		zap.String("serviceName", serviceName),
 		zap.Bool("configLoaded", configLoaded),
 	)
@@ -311,7 +340,7 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	serviceName := getFirstServiceNameFromMetrics(md)
 	dpCount := md.DataPointCount()
 
-	e.logger.Debug("pushMetrics called", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount))
+	e.fileLogger.Debug("pushMetrics called", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount))
 
 	appendClusterToServiceNameInMetrics(md)
 
@@ -320,7 +349,7 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	serviceEnabled := !configLoaded || (len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName])
 	e.traceConfig.mu.RUnlock()
 
-	e.logger.Debug("metrics filter check",
+	e.fileLogger.Debug("metrics filter check",
 		zap.String("serviceName", serviceName),
 		zap.Bool("configLoaded", configLoaded),
 		zap.Bool("serviceEnabled", serviceEnabled),
@@ -338,11 +367,11 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 			return nil
 		}
 
-		e.logger.Debug("sending metrics to backend", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount), zap.String("url", e.metricsURL))
+		e.fileLogger.Debug("sending metrics to backend", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount), zap.String("url", e.metricsURL))
 		return e.export(ctx, e.metricsURL, marshalProto, e.metricsPartialSuccessHandler)
 	}
 
-	e.logger.Debug("dropping metrics: service not enabled in trace-services config",
+	e.fileLogger.Debug("dropping metrics: service not enabled in trace-services config",
 		zap.String("serviceName", serviceName),
 		zap.Bool("configLoaded", configLoaded),
 	)
