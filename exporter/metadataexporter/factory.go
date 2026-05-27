@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
@@ -41,6 +42,7 @@ func createTraces(ctx context.Context, set exporter.Settings, cfg component.Conf
 		exp.pushTraces,
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: c.Timeout}),
+		exporterhelper.WithQueue(configoptional.Some(exporterhelper.NewDefaultQueueConfig())),
 		exporterhelper.WithShutdown(exp.shutdown),
 	)
 }
