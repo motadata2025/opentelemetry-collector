@@ -142,6 +142,7 @@ func (e *baseExporter) periodicConfigReader(ctx context.Context, interval time.D
 
 func (e *baseExporter) pollTraceServiceConfig() {
 	if e.config.ClientConfig.Endpoint == "" {
+		e.logger.Debug("skipping trace-services poll: endpoint not configured")
 		return
 	}
 
@@ -153,6 +154,7 @@ func (e *baseExporter) pollTraceServiceConfig() {
 
 	// Construct the trace services URL: {scheme}://{host}:{port}/v1/trace-services
 	traceServicesURL := fmt.Sprintf("%s://%s/v1/trace-services", parsedURL.Scheme, parsedURL.Host)
+	e.logger.Debug("polling trace-services config", zap.String("url", traceServicesURL))
 
 	req, err := http.NewRequest(http.MethodGet, traceServicesURL, nil)
 	if err != nil {
@@ -162,7 +164,7 @@ func (e *baseExporter) pollTraceServiceConfig() {
 
 	resp, err := e.configClient.Do(req)
 	if err != nil {
-		e.logger.Error("Failed to fetch trace services config", zap.Error(err))
+		e.logger.Error("Failed to fetch trace services config — master app may be down, retaining previous config", zap.Error(err))
 		return
 	}
 	defer resp.Body.Close()
@@ -178,6 +180,8 @@ func (e *baseExporter) pollTraceServiceConfig() {
 		return
 	}
 
+	e.logger.Debug("trace-services raw response", zap.String("body", string(body)))
+
 	var traceResponse TraceServiceResponse
 	if err := json.Unmarshal(body, &traceResponse); err != nil {
 		e.logger.Error("Failed to unmarshal trace services response", zap.Error(err))
@@ -189,6 +193,8 @@ func (e *baseExporter) pollTraceServiceConfig() {
 		serviceMap[serviceName] = status.ServiceTraceState == "yes"
 	}
 
+	e.logger.Debug("parsed trace-services config", zap.Any("services", serviceMap))
+
 	if len(serviceMap) == 0 {
 		e.logger.Warn("trace-services returned empty result, retaining previous config")
 		return
@@ -196,7 +202,7 @@ func (e *baseExporter) pollTraceServiceConfig() {
 
 	e.traceConfig.mu.Lock()
 	e.traceConfig.serviceStatusMap = serviceMap
-	e.logger.Debug("Updated trace services config", zap.Any("config", e.traceConfig.serviceStatusMap))
+	e.logger.Debug("updated trace services config", zap.Any("config", e.traceConfig.serviceStatusMap))
 	e.traceConfig.mu.Unlock()
 
 }
@@ -215,25 +221,39 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	tdCopy := ptrace.NewTraces()
 	td.CopyTo(tdCopy)
 
+	serviceName := getFirstServiceName(tdCopy)
+	spanCount := td.SpanCount()
+
+	e.logger.Debug("pushTraces called", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount))
+
 	appendClusterToServiceName(tdCopy)
 
-	serviceName := getFirstServiceName(tdCopy)
-
 	e.traceConfig.mu.RLock()
-	serviceEnabled := len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName]
+	configLoaded := e.traceConfig.serviceStatusMap != nil
+	serviceEnabled := !configLoaded || (len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName])
 	e.traceConfig.mu.RUnlock()
+
+	e.logger.Debug("trace filter check",
+		zap.String("serviceName", serviceName),
+		zap.Bool("configLoaded", configLoaded),
+		zap.Bool("serviceEnabled", serviceEnabled),
+	)
+
 	if serviceEnabled {
 		var err error
 		req := ptraceotlp.NewExportRequestFromTraces(tdCopy)
 		marshalProto, err := req.MarshalProto()
 		if err != nil {
-			e.logger.Error("failed to marshal trace data: ", zap.Error(err))
+			e.logger.Error("failed to marshal trace data", zap.Error(err))
 		}
-		e.logger.Debug("Sending trace data: ", zap.String("serviceName", serviceName))
+		e.logger.Debug("sending traces to backend", zap.String("serviceName", serviceName), zap.Int("spanCount", spanCount), zap.String("url", e.tracesURL))
 		return e.export(ctx, e.tracesURL, marshalProto, e.tracesPartialSuccessHandler)
-	} else {
-		e.logger.Debug("skipping trace data: service trace collection are off", zap.String("serviceName", serviceName))
 	}
+
+	e.logger.Debug("dropping traces: service not enabled in trace-services config",
+		zap.String("serviceName", serviceName),
+		zap.Bool("configLoaded", configLoaded),
+	)
 	return nil
 }
 
@@ -288,13 +308,24 @@ func getFirstServiceNameFromMetrics(md pmetric.Metrics) string {
 }
 
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
+	serviceName := getFirstServiceNameFromMetrics(md)
+	dpCount := md.DataPointCount()
+
+	e.logger.Debug("pushMetrics called", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount))
+
 	appendClusterToServiceNameInMetrics(md)
 
-	serviceName := getFirstServiceNameFromMetrics(md)
-
 	e.traceConfig.mu.RLock()
-	serviceEnabled := len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName]
+	configLoaded := e.traceConfig.serviceStatusMap != nil
+	serviceEnabled := !configLoaded || (len(serviceName) > 0 && e.traceConfig.serviceStatusMap[serviceName])
 	e.traceConfig.mu.RUnlock()
+
+	e.logger.Debug("metrics filter check",
+		zap.String("serviceName", serviceName),
+		zap.Bool("configLoaded", configLoaded),
+		zap.Bool("serviceEnabled", serviceEnabled),
+	)
+
 	if serviceEnabled {
 		tr := pmetricotlp.NewExportRequestFromMetrics(md)
 
@@ -303,14 +334,18 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 		marshalProto, err = tr.MarshalProto()
 
 		if err != nil {
-			e.logger.Error("failed to marshal metrics data: ", zap.Error(err))
+			e.logger.Error("failed to marshal metrics data", zap.Error(err))
 			return nil
 		}
 
+		e.logger.Debug("sending metrics to backend", zap.String("serviceName", serviceName), zap.Int("dataPointCount", dpCount), zap.String("url", e.metricsURL))
 		return e.export(ctx, e.metricsURL, marshalProto, e.metricsPartialSuccessHandler)
-	} else {
-		e.logger.Debug("skipping metrics data: service metric collection is off", zap.String("serviceName", serviceName))
 	}
+
+	e.logger.Debug("dropping metrics: service not enabled in trace-services config",
+		zap.String("serviceName", serviceName),
+		zap.Bool("configLoaded", configLoaded),
+	)
 	return nil
 }
 
