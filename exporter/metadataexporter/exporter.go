@@ -115,6 +115,9 @@ func (e *metadataExporter) pushTraces(ctx context.Context, td ptrace.Traces) err
 
 	if err := e.sendMetadata(ctx, payload); err != nil {
 		e.logger.Error("failed to export service metadata", zap.Error(err), zap.Int("services", len(payload)))
+		// Update the cache so we respect SendInterval between retries instead of
+		// retrying on every trace batch.
+		e.commitPending(pending)
 		return nil
 	}
 
