@@ -160,6 +160,40 @@ func TestFallbackServiceNameLogic(t *testing.T) {
 	})
 }
 
+func TestK8sClusterNameAppended(t *testing.T) {
+	now := time.Unix(1710000000, 0)
+
+	t.Run("appends cluster name to service name", func(t *testing.T) {
+		res := pcommon.NewResource()
+		res.Attributes().PutStr("service.name", "payment-service")
+		res.Attributes().PutStr("k8s.cluster.name", "prod-cluster")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "payment-service@prod-cluster", got.ServiceName)
+	})
+
+	t.Run("no double append when already qualified", func(t *testing.T) {
+		res := pcommon.NewResource()
+		res.Attributes().PutStr("service.name", "payment-service@prod-cluster")
+		res.Attributes().PutStr("k8s.cluster.name", "prod-cluster")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "payment-service@prod-cluster", got.ServiceName)
+	})
+
+	t.Run("appends cluster name to fallback unknown_service", func(t *testing.T) {
+		res := pcommon.NewResource()
+		res.Attributes().PutStr("k8s.cluster.name", "dev-cluster")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "unknown_service@dev-cluster", got.ServiceName)
+	})
+
+	t.Run("no cluster name attr leaves service name unchanged", func(t *testing.T) {
+		res := pcommon.NewResource()
+		res.Attributes().PutStr("service.name", "payment-service")
+		got := testExporter().extractMetadata(res, now)
+		assert.Equal(t, "payment-service", got.ServiceName)
+	})
+}
+
 // --- Deduplication and cache ---
 
 func TestDeduplicationLogic(t *testing.T) {
