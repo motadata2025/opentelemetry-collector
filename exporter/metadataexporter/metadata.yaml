@@ -1,0 +1,12 @@
+type: metadata
+
+status:
+  class: exporter
+  stability:
+    alpha: [traces]
+
+tests:
+  config:
+    endpoint: "http://localhost:9443"
+    send_interval: 60s
+    timeout: 5s
