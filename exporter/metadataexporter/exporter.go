@@ -252,12 +252,6 @@ func (e *metadataExporter) extractMetadata(resource pcommon.Resource, now time.T
 		}
 	}
 
-	if clusterName := stringAttr(attrs, "k8s.cluster.name"); clusterName != "" {
-		if !strings.Contains(serviceName, "@"+clusterName) {
-			serviceName = serviceName + "@" + clusterName
-		}
-	}
-
 	cmdLine := stringAttr(attrs, "process.command_line")
 	if cmdLine == "" {
 		if args := stringSliceAttr(attrs, "process.command_args"); len(args) > 0 {
