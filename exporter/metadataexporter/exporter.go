@@ -236,6 +236,13 @@ func (e *metadataExporter) extractMetadata(resource pcommon.Resource, now time.T
 	attrs := resource.Attributes()
 
 	serviceName := stringAttr(attrs, "service.name")
+
+	// Qualify the service name with the k8s cluster name, matching otlphttpexporter's
+	// traces path: only when both service.name and k8s.cluster.name are present.
+	if clusterName := stringAttr(attrs, "k8s.cluster.name"); serviceName != "" && clusterName != "" {
+		serviceName = serviceName + "@" + clusterName
+	}
+
 	if serviceName == "" {
 		lang := stringAttr(attrs, "telemetry.sdk.language")
 		if lang != "" {

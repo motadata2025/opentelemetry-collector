@@ -171,19 +171,19 @@ func TestK8sClusterNameAppended(t *testing.T) {
 		assert.Equal(t, "payment-service@prod-cluster", got.ServiceName)
 	})
 
-	t.Run("no double append when already qualified", func(t *testing.T) {
+	t.Run("appends unconditionally even if already qualified (no dedup guard)", func(t *testing.T) {
 		res := pcommon.NewResource()
 		res.Attributes().PutStr("service.name", "payment-service@prod-cluster")
 		res.Attributes().PutStr("k8s.cluster.name", "prod-cluster")
 		got := testExporter().extractMetadata(res, now)
-		assert.Equal(t, "payment-service@prod-cluster", got.ServiceName)
+		assert.Equal(t, "payment-service@prod-cluster@prod-cluster", got.ServiceName)
 	})
 
-	t.Run("appends cluster name to fallback unknown_service", func(t *testing.T) {
+	t.Run("does not qualify fallback service name", func(t *testing.T) {
 		res := pcommon.NewResource()
 		res.Attributes().PutStr("k8s.cluster.name", "dev-cluster")
 		got := testExporter().extractMetadata(res, now)
-		assert.Equal(t, "unknown_service@dev-cluster", got.ServiceName)
+		assert.Equal(t, "unknown_service", got.ServiceName)
 	})
 
 	t.Run("no cluster name attr leaves service name unchanged", func(t *testing.T) {
