@@ -122,7 +122,7 @@ func (e *metadataExporter) pushTraces(ctx context.Context, td ptrace.Traces) err
 	}
 
 	e.commitPending(pending)
-	e.logger.Info("sent service metadata", zap.Int("services", len(payload)), zap.String("endpoint", e.cfg.Endpoint))
+	e.logger.Debug("sent service metadata", zap.Int("services", len(payload)), zap.String("endpoint", e.cfg.Endpoint))
 	return nil
 }
 
