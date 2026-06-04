@@ -361,7 +361,8 @@ func TestHTTPNon2xxFailure(t *testing.T) {
 		SendInterval: time.Minute,
 		Timeout:      5 * time.Second,
 	}, exporterSettings())
-	exp.now = func() time.Time { return time.Unix(1710000000, 0) }
+	now := time.Unix(1710000000, 0)
+	exp.now = func() time.Time { return now }
 
 	// best-effort: HTTP errors are logged but not returned to the pipeline
 	require.NoError(t, exp.pushTraces(context.Background(), tracesWithResource(func(attrs pcommon.Map) {
@@ -370,8 +371,18 @@ func TestHTTPNon2xxFailure(t *testing.T) {
 		attrs.PutInt("process.pid", 1234)
 	})))
 
-	// cache must NOT have been updated on failure — next call should retry
+	// On failure the cache is still committed so we respect SendInterval instead
+	// of hammering the backend on every trace batch — an immediate retry is suppressed.
 	retry := exp.collectMetadata(tracesWithResource(func(attrs pcommon.Map) {
+		attrs.PutStr("service.name", "payment-service")
+		attrs.PutStr("host.name", "server-1")
+		attrs.PutInt("process.pid", 1234)
+	}))
+	require.Empty(t, retry)
+
+	// Once SendInterval has elapsed, the same service becomes eligible again.
+	now = now.Add(time.Minute)
+	retry = exp.collectMetadata(tracesWithResource(func(attrs pcommon.Map) {
 		attrs.PutStr("service.name", "payment-service")
 		attrs.PutStr("host.name", "server-1")
 		attrs.PutInt("process.pid", 1234)
@@ -389,6 +400,8 @@ func TestHTTPNetworkError(t *testing.T) {
 		SendInterval: time.Minute,
 		Timeout:      5 * time.Second,
 	}, exporterSettings())
+	now := time.Unix(1710000000, 0)
+	exp.now = func() time.Time { return now }
 
 	// best-effort: network errors are logged, not returned
 	require.NoError(t, exp.pushTraces(context.Background(), tracesWithResource(func(attrs pcommon.Map) {
@@ -397,8 +410,18 @@ func TestHTTPNetworkError(t *testing.T) {
 		attrs.PutInt("process.pid", 1234)
 	})))
 
-	// cache not updated — will retry on next call
+	// Cache is committed even on a network error, so an immediate retry within
+	// SendInterval is suppressed (avoids hammering an unreachable backend every batch).
 	retry := exp.collectMetadata(tracesWithResource(func(attrs pcommon.Map) {
+		attrs.PutStr("service.name", "payment-service")
+		attrs.PutStr("host.name", "server-1")
+		attrs.PutInt("process.pid", 1234)
+	}))
+	require.Empty(t, retry)
+
+	// After SendInterval elapses, the service becomes eligible to be sent again.
+	now = now.Add(time.Minute)
+	retry = exp.collectMetadata(tracesWithResource(func(attrs pcommon.Map) {
 		attrs.PutStr("service.name", "payment-service")
 		attrs.PutStr("host.name", "server-1")
 		attrs.PutInt("process.pid", 1234)
