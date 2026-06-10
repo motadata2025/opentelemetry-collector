@@ -80,6 +80,7 @@ func TestExtractMetadata(t *testing.T) {
 	attrs.PutStr("telemetry.sdk.language", "java")
 	attrs.PutStr("telemetry.sdk.name", "opentelemetry")
 	attrs.PutStr("telemetry.sdk.version", "1.35.0")
+	attrs.PutStr("telemetry.distro.name", "opentelemetry-ebpf-instrumentation")
 	attrs.PutStr("container.id", "container-123")
 
 	got := testExporter().extractMetadata(res, now)
@@ -100,6 +101,7 @@ func TestExtractMetadata(t *testing.T) {
 		TelemetrySDKLanguage:      "java",
 		TelemetrySDKName:          "opentelemetry",
 		TelemetrySDKVersion:       "1.35.0",
+		TelemetryDistroName:       "opentelemetry-ebpf-instrumentation",
 		ContainerID:               "container-123",
 		Timestamp:                 1710000000000,
 	}, got)

@@ -65,6 +65,7 @@ type serviceMetadata struct {
 	TelemetrySDKLanguage      string `json:"telemetrySdkLanguage"`
 	TelemetrySDKName          string `json:"telemetrySdkName"`
 	TelemetrySDKVersion       string `json:"telemetrySdkVersion"`
+	TelemetryDistroName       string `json:"telemetryDistroName"`
 	ContainerID               string `json:"containerId"`
 	Timestamp                 int64  `json:"timestamp"`
 }
@@ -275,6 +276,7 @@ func (e *metadataExporter) extractMetadata(resource pcommon.Resource, now time.T
 		TelemetrySDKLanguage:      stringAttr(attrs, "telemetry.sdk.language"),
 		TelemetrySDKName:          stringAttr(attrs, "telemetry.sdk.name"),
 		TelemetrySDKVersion:       stringAttr(attrs, "telemetry.sdk.version"),
+		TelemetryDistroName:       stringAttr(attrs, "telemetry.distro.name"),
 		ContainerID:               stringAttr(attrs, "container.id"),
 		Timestamp:                 now.UnixMilli(),
 	}
